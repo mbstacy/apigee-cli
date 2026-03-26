@@ -507,12 +507,15 @@ check_bundle() {
       return
     fi
 
-    # Build a clean local copy (strip .git and .md — same as what apigee-push uploads)
+    # Build a clean local copy (strip .git, .md, and root descriptor XML — same as what
+    # apigee-push uploads, minus the root XML whose revision attr is overwritten by Apigee)
     local local_clean="$WORK_DIR/${name}-local-clean"
     rm -rf "$local_clean"
     cp -r "$local_src" "$local_clean"
     find "$local_clean" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
     find "$local_clean" -name "*.md" -type f -delete 2>/dev/null || true
+    find "$local_clean" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
+    find "$inner_dir" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
 
     local diff_out
     diff_out=$(diff -rq "$local_clean" "$inner_dir" 2>/dev/null) || true
