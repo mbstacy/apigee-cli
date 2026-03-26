@@ -30,23 +30,42 @@ Automatically detects bundle type (`apiproxy` vs `sharedflowbundle`) and name fr
 
 ## Installation
 
+Pick a directory on your `PATH` and copy the script there. Common choices:
+
+| Location | Who it's for |
+|----------|-------------|
+| `/usr/local/bin` | All users on the machine (requires `sudo`) |
+| `~/.local/bin` | Your user only — standard on most Linux distros |
+| `~/bin` | Your user only — common on macOS |
+| `~/local/bin` | Your user only — if that's your convention |
+
+**Quick install (pick your target dir):**
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/markstacy/apigee-push/main/apigee-push -o ~/local/bin/apigee-push
-chmod +x ~/local/bin/apigee-push
+# Replace TARGET_DIR with your preferred location, e.g. ~/.local/bin
+TARGET_DIR=~/.local/bin
+mkdir -p "$TARGET_DIR"
+curl -fsSL https://raw.githubusercontent.com/markstacy/apigee-push/main/apigee-push -o "$TARGET_DIR/apigee-push"
+chmod +x "$TARGET_DIR/apigee-push"
 ```
 
-Or clone and symlink:
+**Or clone and symlink (easier to update later):**
 
 ```bash
 git clone https://github.com/markstacy/apigee-push.git ~/github/apigee-push
-ln -sf ~/github/apigee-push/apigee-push ~/local/bin/apigee-push
+ln -sf ~/github/apigee-push/apigee-push ~/.local/bin/apigee-push
 ```
 
-Make sure `~/local/bin` is in your `PATH`:
+Then `git pull` in the cloned folder whenever you want to update.
+
+**Make sure your chosen directory is on your PATH:**
 
 ```bash
-# Add to ~/.zshrc or ~/.bashrc if not already there
-export PATH="$HOME/local/bin:$PATH"
+# Check first — it may already be there
+echo "$PATH" | tr ':' '\n' | grep local
+
+# If not, add to ~/.zshrc or ~/.bashrc
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ---
