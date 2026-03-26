@@ -1,0 +1,529 @@
+#!/usr/bin/env bash
+# apigee-push — Bundle, upload, and deploy Apigee proxies and shared flows
+#
+# Description:
+#   Packages a proxy or shared flow folder into a zip, uploads it to Apigee X,
+#   and optionally deploys the new revision to an environment — all in one command.
+#   Bundle type (apiproxy vs sharedflowbundle) and name are detected automatically
+#   from the folder structure and XML descriptor.
+#
+# Config:
+#   Create $HOME/.apigee-push to set org names and SA key paths per environment.
+#   If the file is missing, built-in defaults are used. All values can be
+#   overridden per-run with -o/--org or -k/--sa-key.
+#
+#   Example $HOME/.apigee-push:
+#     DEV_ORG=my-nonprod-org
+#     DEV_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+#     TEST_ORG=my-nonprod-org
+#     TEST_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+#     SAND_ORG=my-nonprod-org
+#     SAND_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+#     STAGE_ORG=my-preprod-org
+#     STAGE_SA_KEY=$HOME/.ssh/apigee/preprod.json
+#     PROD_ORG=my-prod-org
+#     PROD_SA_KEY=$HOME/.ssh/apigee/prod.json
+#
+# Usage:
+#   apigee-push [OPTIONS] [FOLDER_NAME ...]
+#
+# Options:
+#   -u, --upload      Upload bundles to Apigee after zipping
+#   -d, --deploy      Deploy uploaded revision to --env after upload (requires --env)
+#   -D, --download    Download latest revision from Apigee into local folder
+#       --deployed    Use with -D to download the currently deployed revision for --env
+#   -r, --revision N  Use with -D to download a specific revision number
+#   -e, --env <env>   Sets org + SA key from config (each env is independent):
+#                       dev   → DEV_ORG   / DEV_SA_KEY
+#                       test  → TEST_ORG  / TEST_SA_KEY
+#                       sand  → SAND_ORG  / SAND_SA_KEY
+#                       stage → STAGE_ORG / STAGE_SA_KEY
+#                       prod  → PROD_ORG  / PROD_SA_KEY
+#   -o, --org <org>   Override the org derived from --env
+#   -k, --sa-key <f>  Override the SA key file derived from --env
+#   -t, --token <tok> Bearer token (overrides all auth methods)
+#   -a, --all         Process all bundles found in current directory
+#   -v, --verbose     Print full API responses for upload and deploy
+#
+# Examples:
+#   apigee-push -a                                      # zip all bundles
+#   apigee-push ais-bedrock-llm                         # zip one bundle
+#   apigee-push -e dev ais-bedrock-llm                  # zip + upload to nonprod
+#   apigee-push -e dev -a                               # zip + upload all to nonprod
+#   apigee-push -e dev -d ais-openai-direct-v2          # zip + upload + deploy one
+#   apigee-push -e prod -d -a                           # zip + upload + deploy all to prod
+
+set -euo pipefail
+
+# ── Load user config (~/.apigee-push) ────────────────────────────────────────
+APIGEE_PUSH_CONFIG="${HOME}/.apigee-push"
+if [[ -f "$APIGEE_PUSH_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$APIGEE_PUSH_CONFIG"
+else
+  echo "ERROR: config file not found: $APIGEE_PUSH_CONFIG"
+  echo "       Create it with your org names and SA key paths."
+  echo "       Run: apigee-push --help for an example."
+  exit 1
+fi
+
+# Validate required config variables are set
+config_errors=0
+for var in DEV_ORG DEV_SA_KEY TEST_ORG TEST_SA_KEY SAND_ORG SAND_SA_KEY STAGE_ORG STAGE_SA_KEY PROD_ORG PROD_SA_KEY; do
+  if [[ -z "${!var:-}" ]]; then
+    echo "ERROR: $var is not set in $APIGEE_PUSH_CONFIG"
+    config_errors=$((config_errors + 1))
+  fi
+done
+[[ $config_errors -gt 0 ]] && exit 1
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+CWD="$(pwd)"
+UPLOAD=true
+DEPLOY=true
+DOWNLOAD=false
+DEPLOYED=false
+REVISION=""
+ALL=false
+VERBOSE=false
+YES=false
+ORG=""
+TOKEN=""
+ENV=""
+SA_KEY_FILE=""
+TARGETS=()
+
+# ── Arg parsing ───────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--upload)   UPLOAD=true; shift ;;
+    -d|--deploy)   DEPLOY=true; shift ;;
+    -D|--download) DOWNLOAD=true; UPLOAD=false; DEPLOY=false; shift ;;
+    --deployed)    DEPLOYED=true; shift ;;
+    -r|--revision) REVISION="$2"; shift 2 ;;
+    -e|--env)      ENV="$2"; shift 2 ;;
+    -o|--org)      ORG="$2"; shift 2 ;;
+    -k|--sa-key)   SA_KEY_FILE="$2"; shift 2 ;;
+    -t|--token)    TOKEN="$2"; shift 2 ;;
+-a|--all)      ALL=true; shift ;;
+    -v|--verbose)  VERBOSE=true; shift ;;
+    -y|--yes)      YES=true; shift ;;
+    --help|-h)
+      sed -n '3,45p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    --*) echo "Unknown option: $1"; exit 1 ;;
+    *)   TARGETS+=("$1"); shift ;;
+  esac
+done
+
+# ── Resolve SA key from --env (--sa-key overrides) ───────────────────────────
+ENV_PREFIX=""
+if [[ -n "$ENV" ]]; then
+  case "$ENV" in
+    dev)   ENV_PREFIX="DEV" ;;
+    test)  ENV_PREFIX="TEST" ;;
+    sand)  ENV_PREFIX="SAND" ;;
+    stage) ENV_PREFIX="STAGE" ;;
+    prod)  ENV_PREFIX="PROD" ;;
+    *) echo "ERROR: Unknown --env '$ENV'. Use: dev, test, sand, stage, or prod"; exit 1 ;;
+  esac
+  org_var="${ENV_PREFIX}_ORG"
+  key_var="${ENV_PREFIX}_SA_KEY"
+  [[ -z "$ORG" ]]        && ORG="${!org_var}"
+  [[ -z "$SA_KEY_FILE" ]] && SA_KEY_FILE="${!key_var}"
+fi
+
+if [[ -n "$SA_KEY_FILE" && ! -f "$SA_KEY_FILE" ]]; then
+  echo "ERROR: SA key file not found: $SA_KEY_FILE"
+  if [[ ! -f "$APIGEE_PUSH_CONFIG" ]]; then
+    echo "       No config file found at $APIGEE_PUSH_CONFIG"
+    echo "       Create it to set custom SA key paths. Run: apigee-push --help"
+  else
+    echo "       Check ${ENV_PREFIX}_SA_KEY in $APIGEE_PUSH_CONFIG"
+  fi
+  exit 1
+fi
+
+if $UPLOAD && [[ -n "$ENV" && -z "$ORG" ]]; then
+  echo "ERROR: no org configured for env '$ENV'"
+  if [[ ! -f "$APIGEE_PUSH_CONFIG" ]]; then
+    echo "       Create $APIGEE_PUSH_CONFIG or use -o/--org to specify the org"
+  else
+    echo "       Check ${ENV_PREFIX}_ORG in $APIGEE_PUSH_CONFIG"
+  fi
+  exit 1
+fi
+
+# ── Detect bundle type and canonical name from XML ────────────────────────────
+detect_bundle_type() {
+  local src="$1"
+  if [[ -d "$src/proxies" ]]; then
+    echo "apiproxy"
+  elif [[ -d "$src/sharedflows" ]]; then
+    echo "sharedflowbundle"
+  else
+    echo ""
+  fi
+}
+
+detect_bundle_name() {
+  local src="$1"
+  # Find the root descriptor XML (APIProxy or SharedFlowBundle element) and extract name attribute
+  grep -rh 'name="' "$src"/*.xml 2>/dev/null \
+    | grep -E '<(APIProxy|SharedFlowBundle)[^>]+name=' \
+    | grep -o 'name="[^"]*"' \
+    | head -1 \
+    | cut -d'"' -f2
+}
+
+# ── Require a bundle name or --all ────────────────────────────────────────────
+if $ALL; then
+  # Auto-discover: any subdirectory with proxies/ or sharedflows/
+  for dir in "$CWD"/*/; do
+    name="$(basename "$dir")"
+    [[ -n "$(detect_bundle_type "$dir")" ]] && TARGETS+=("$name")
+  done
+  if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    echo "ERROR: no bundles found under $CWD"
+    exit 1
+  fi
+elif [[ ${#TARGETS[@]} -eq 0 ]]; then
+  echo "ERROR: specify a bundle name or use --all (-a)"
+  exit 1
+fi
+
+# ── Validate upload requirements ─────────────────────────────────────────────
+if $UPLOAD && [[ -z "$ORG" ]]; then
+  echo "ERROR: --org is required when using --upload"
+  exit 1
+fi
+
+if $DEPLOY && [[ -z "$ENV" ]]; then
+  echo "ERROR: --env is required when using --deploy"
+  exit 1
+fi
+
+# ── Confirm before acting ─────────────────────────────────────────────────────
+echo ""
+echo "The following bundles were found:"
+for BUNDLE in "${TARGETS[@]}"; do
+  SRC="$CWD/$BUNDLE"
+  if [[ -d "$SRC" ]]; then
+    TYPE="$(detect_bundle_type "$SRC")"
+    NAME="$(detect_bundle_name "$SRC" 2>/dev/null || echo "$BUNDLE")"
+    [[ -z "$NAME" ]] && NAME="$BUNDLE"
+    echo "  • $NAME ($TYPE) — $SRC"
+  else
+    echo "  • $BUNDLE — folder not found"
+  fi
+done
+echo ""
+if $DOWNLOAD && [[ -n "$REVISION" ]]; then
+  echo "Action: download revision $REVISION from org '$ORG' to $CWD"
+elif $DOWNLOAD && $DEPLOYED; then
+  echo "Action: download deployed revision from env '$ENV' (org: $ORG) to $CWD"
+elif $DOWNLOAD; then
+  echo "Action: download latest revision from org '$ORG' to $CWD"
+elif $UPLOAD && $DEPLOY; then
+  echo "Action: upload + deploy to env '$ENV' (org: $ORG)"
+elif $UPLOAD; then
+  echo "Action: upload to org '$ORG'"
+else
+  echo "Action: zip only (no upload)"
+fi
+echo ""
+if $YES; then
+  echo "Proceeding (--yes)."
+else
+  read -r -p "Proceed? [y/N] " CONFIRM
+  case "$CONFIRM" in
+    y|Y) ;;
+    *) echo "Aborted."; exit 0 ;;
+  esac
+fi
+echo ""
+
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+# ── Resolve token once ────────────────────────────────────────────────────────
+if ($UPLOAD || $DOWNLOAD) && [[ -z "$TOKEN" ]]; then
+  if [[ -n "$SA_KEY_FILE" ]]; then
+    echo "Authenticating with $SA_KEY_FILE ..."
+    cfg="apigee-push-$$"
+    gcloud config configurations create "$cfg" --no-activate > /dev/null 2>&1
+    gcloud auth activate-service-account --key-file="$SA_KEY_FILE" \
+      --configuration="$cfg" > /dev/null 2>&1
+    TOKEN=$(gcloud auth print-access-token --configuration="$cfg" 2>/dev/null)
+    gcloud config configurations delete "$cfg" --quiet > /dev/null 2>&1
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: failed to obtain access token from $SA_KEY_FILE"
+      exit 1
+    fi
+    echo "  ✓ token obtained"
+  else
+    TOKEN=$(gcloud auth print-access-token 2>/dev/null)
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: failed to obtain access token via gcloud"
+      exit 1
+    fi
+  fi
+fi
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+LAST_REVISION=""
+
+upload_proxy() {
+  local name="$1" zip="$2" resp rev
+  LAST_REVISION=""
+  echo "  → Uploading proxy '$name' to org '$ORG'..."
+  resp=$(curl -s -X POST \
+    "https://apigee.googleapis.com/v1/organizations/${ORG}/apis?action=import&name=${name}" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: multipart/form-data" \
+    -F "file=@${zip}") || true
+  rev=$(echo "$resp" | jq -r '.revision // empty' 2>/dev/null) || true
+  if [[ -n "$rev" ]]; then
+    echo "  ✓ uploaded rev $rev"
+    LAST_REVISION="$rev"
+  else
+    echo "  ERROR: upload failed — $(echo "$resp" | jq -r '.error.message // .error // "unknown error"' 2>/dev/null)"
+  fi
+  $VERBOSE && echo "$resp" | jq . 2>/dev/null || true
+}
+
+upload_sharedflow() {
+  local name="$1" zip="$2" resp rev
+  LAST_REVISION=""
+  echo "  → Uploading shared flow '$name' to org '$ORG'..."
+  resp=$(curl -s -X POST \
+    "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows?action=import&name=${name}" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: multipart/form-data" \
+    -F "file=@${zip}") || true
+  rev=$(echo "$resp" | jq -r '.revision // empty' 2>/dev/null) || true
+  if [[ -n "$rev" ]]; then
+    echo "  ✓ uploaded rev $rev"
+    LAST_REVISION="$rev"
+  else
+    echo "  ERROR: upload failed — $(echo "$resp" | jq -r '.error.message // .error // "unknown error"' 2>/dev/null)"
+  fi
+  $VERBOSE && echo "$resp" | jq . 2>/dev/null || true
+}
+
+deploy_proxy() {
+  local name="$1" rev="$2" resp
+  echo "  → Deploying proxy '$name' rev $rev to env '$ENV'..."
+  resp=$(curl -s -X POST \
+    "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/apis/${name}/revisions/${rev}/deployments?override=true" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Length: 0") || true
+  if echo "$resp" | jq -e '.error' > /dev/null 2>&1; then
+    echo "  ERROR: $(echo "$resp" | jq -r '.error.message // .error')"
+  else
+    echo "  ✓ deployed rev $(echo "$resp" | jq -r '.revision // "?"') to $ENV"
+  fi
+  $VERBOSE && echo "$resp" | jq . 2>/dev/null || true
+}
+
+deploy_sharedflow() {
+  local name="$1" rev="$2" resp
+  echo "  → Deploying shared flow '$name' rev $rev to env '$ENV'..."
+  resp=$(curl -s -X POST \
+    "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/sharedflows/${name}/revisions/${rev}/deployments?override=true" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Length: 0") || true
+  if echo "$resp" | jq -e '.error' > /dev/null 2>&1; then
+    echo "  ERROR: $(echo "$resp" | jq -r '.error.message // .error')"
+  else
+    echo "  ✓ deployed rev $(echo "$resp" | jq -r '.revision // "?"') to $ENV"
+  fi
+  $VERBOSE && echo "$resp" | jq . 2>/dev/null || true
+}
+
+DETECTED_TYPE=""
+DETECTED_REVISION=""
+
+detect_remote_type() {
+  local name="$1" resp
+  DETECTED_TYPE=""
+  DETECTED_REVISION=""
+  resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions" \
+    -H "Authorization: Bearer ${TOKEN}") || true
+  if echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1; then
+    DETECTED_TYPE="apiproxy"
+    DETECTED_REVISION=$(echo "$resp" | jq -r '[.[] | tonumber] | max | tostring' 2>/dev/null) || true
+    return
+  fi
+  resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions" \
+    -H "Authorization: Bearer ${TOKEN}") || true
+  if echo "$resp" | jq -e 'type == "array"' > /dev/null 2>&1; then
+    DETECTED_TYPE="sharedflowbundle"
+    DETECTED_REVISION=$(echo "$resp" | jq -r '[.[] | tonumber] | max | tostring' 2>/dev/null) || true
+    return
+  fi
+}
+
+get_revision() {
+  local type="$1" name="$2" resp rev
+  if [[ -n "$REVISION" ]]; then
+    echo "$REVISION"
+    return
+  fi
+  if $DEPLOYED; then
+    if [[ -z "$ENV" ]]; then
+      echo "  ERROR: --env is required with --deployed"
+      echo ""; return
+    fi
+    if [[ "$type" == "apiproxy" ]]; then
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/apis/${name}/deployments" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    else
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/sharedflows/${name}/deployments" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    fi
+    rev=$(echo "$resp" | jq -r '.deployments[0].revision // empty' 2>/dev/null) || true
+  else
+    if [[ "$type" == "apiproxy" ]]; then
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    else
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    fi
+    rev=$(echo "$resp" | jq -r '[.[] | tonumber] | max | tostring' 2>/dev/null) || true
+  fi
+  if [[ -z "$rev" ]]; then
+    echo "  ERROR: could not get revision — $(echo "$resp" | jq -r '.error.message // .error // "unknown error"' 2>/dev/null)"
+  fi
+  echo "$rev"
+}
+
+download_bundle() {
+  local type="$1" name="$2" rev="$3"
+  local zip="$WORK_DIR/${name}-rev${rev}.zip"
+  local extract_dir="$WORK_DIR/${name}-extracted"
+  local dest="$CWD/${name}"
+
+  echo "  → Downloading $name rev $rev..."
+  if [[ "$type" == "apiproxy" ]]; then
+    curl -s -o "$zip" \
+      "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions/${rev}?format=bundle" \
+      -H "Authorization: Bearer ${TOKEN}" || true
+  else
+    curl -s -o "$zip" \
+      "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions/${rev}?format=bundle" \
+      -H "Authorization: Bearer ${TOKEN}" || true
+  fi
+
+  if [[ ! -f "$zip" || ! -s "$zip" ]]; then
+    echo "  ERROR: download failed or empty response"
+    return
+  fi
+
+  mkdir -p "$extract_dir"
+  unzip -q "$zip" -d "$extract_dir"
+
+  # Apigee zips contain apiproxy/ or sharedflowbundle/ — move contents to dest folder
+  local inner_dir="$extract_dir/$type"
+  if [[ ! -d "$inner_dir" ]]; then
+    echo "  ERROR: expected '$type/' folder inside downloaded zip"
+    return
+  fi
+
+  rm -rf "$dest"
+  mv "$inner_dir" "$dest"
+  echo "  ✓ extracted to $dest"
+}
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+ERRORS=0
+for BUNDLE in "${TARGETS[@]}"; do
+  SRC="$CWD/$BUNDLE"
+
+  if [[ ! -d "$SRC" ]]; then
+    if $DOWNLOAD; then
+      echo "Downloading: $BUNDLE (folder not found locally — detecting type from Apigee...)"
+      detect_remote_type "$BUNDLE"
+      if [[ -z "$DETECTED_TYPE" ]]; then
+        echo "  SKIP: '$BUNDLE' not found in org '$ORG'"
+        ((ERRORS++)) || true
+        continue
+      fi
+      echo "  detected as $DETECTED_TYPE"
+      if [[ -n "$REVISION" ]] || $DEPLOYED; then
+        REV="$(get_revision "$DETECTED_TYPE" "$BUNDLE")"
+      else
+        REV="$DETECTED_REVISION"
+      fi
+      if [[ -n "$REV" ]]; then
+        download_bundle "$DETECTED_TYPE" "$BUNDLE" "$REV"
+      fi
+      continue
+    fi
+    echo "SKIP: '$SRC' directory not found"
+    ((ERRORS++)) || true
+    continue
+  fi
+
+  INNER="$(detect_bundle_type "$SRC")"
+  if [[ -z "$INNER" ]]; then
+    echo "SKIP: '$BUNDLE' — no proxies/ or sharedflows/ directory found"
+    ((ERRORS++)) || true
+    continue
+  fi
+
+  BUNDLE_NAME="$(detect_bundle_name "$SRC")"
+  if [[ -z "$BUNDLE_NAME" ]]; then
+    echo "WARN: could not read name from XML for '$BUNDLE', falling back to folder name"
+    BUNDLE_NAME="$BUNDLE"
+  fi
+
+  if $DOWNLOAD; then
+    echo "Downloading: $BUNDLE_NAME ($INNER)"
+    REV="$(get_revision "$INNER" "$BUNDLE_NAME")"
+    if [[ -n "$REV" ]]; then
+      download_bundle "$INNER" "$BUNDLE_NAME" "$REV"
+    fi
+    continue
+  fi
+
+  ZIP="$WORK_DIR/${BUNDLE_NAME}.zip"
+  STAGE_DIR="$WORK_DIR/${BUNDLE_NAME}-stage"
+
+  echo "Bundling: $BUNDLE_NAME (internal folder: $INNER/)"
+
+  mkdir -p "$STAGE_DIR"
+  cp -r "$SRC" "$STAGE_DIR/$INNER"
+  find "$STAGE_DIR" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+  (cd "$STAGE_DIR" && zip -qr "$ZIP" "$INNER")
+
+  echo "  ✓ $(du -sh "$ZIP" | cut -f1)"
+
+  if $UPLOAD; then
+    if [[ "$INNER" == "apiproxy" ]]; then
+      upload_proxy "$BUNDLE_NAME" "$ZIP"
+    else
+      upload_sharedflow "$BUNDLE_NAME" "$ZIP"
+    fi
+
+    if $DEPLOY; then
+      if [[ -z "$LAST_REVISION" ]]; then
+        echo "  SKIP deploy: upload did not return a revision"
+      elif [[ "$INNER" == "apiproxy" ]]; then
+        deploy_proxy "$BUNDLE_NAME" "$LAST_REVISION"
+      else
+        deploy_sharedflow "$BUNDLE_NAME" "$LAST_REVISION"
+      fi
+    fi
+  fi
+
+done
+
+echo ""
+if [[ $ERRORS -eq 0 ]]; then
+  echo "Done."
+else
+  echo "Done with $ERRORS skipped."
+fi
