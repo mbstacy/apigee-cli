@@ -497,6 +497,7 @@ for BUNDLE in "${TARGETS[@]}"; do
   mkdir -p "$STAGE_DIR"
   cp -r "$SRC" "$STAGE_DIR/$INNER"
   find "$STAGE_DIR" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$STAGE_DIR" -name "*.md" -type f -delete 2>/dev/null || true
   (cd "$STAGE_DIR" && zip -qr "$ZIP" "$INNER")
 
   echo "  ✓ $(du -sh "$ZIP" | cut -f1)"
