@@ -1,7 +1,6 @@
 Bundle, upload, and deploy Apigee proxy/shared flow bundles using the following arguments: $ARGUMENTS
 
-The apigee-push script lives at /Users/markstacy/github/apigee/apigee-push.
-Always run it from the /Users/markstacy/github/apigee directory.
+The apigee-push script is installed on PATH. Always run it from the working directory containing the Apigee bundle folders.
 
 ## Argument parsing
 
@@ -19,7 +18,7 @@ Examples:
 
 1. Identify which bundles to deploy:
    - If bundle names were provided, use those exactly
-   - If no bundle names were given, run `git diff --name-only HEAD` (or compare working tree) from /Users/markstacy/github/apigee to find which bundle folders have changes. A bundle folder contains a `proxies/` or `sharedflows/` subdirectory.
+   - If no bundle names were given, run `git diff --name-only HEAD` (or compare working tree) from the current directory to find which bundle folders have changes. A bundle folder contains a `proxies/` or `sharedflows/` subdirectory.
 
 2. Order the bundles: shared flows must deploy before proxies that reference them.
    - Shared flows are folders with a `sharedflows/` subdirectory (e.g. adex-ais-cors, adex-ais-auth, adex-ais-preflow, adex-ais-fault, adex-ais-quota)
@@ -30,7 +29,7 @@ Examples:
 
 4. Run apigee-push with --yes (non-interactive) once confirmed:
    ```
-   cd /Users/markstacy/github/apigee && ./apigee-push -e <env> -d --yes <bundle1> <bundle2> ...
+   apigee-push -e <env> -d --yes <bundle1> <bundle2> ...
    ```
 
 5. Report the result — revision numbers deployed and any errors.
