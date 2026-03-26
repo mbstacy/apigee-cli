@@ -44,6 +44,10 @@
 #   -t, --token <tok> Bearer token (overrides all auth methods)
 #   -a, --all         Process all bundles found in current directory
 #   -v, --verbose     Print full API responses for upload and deploy
+#   -C, --check-version
+#                     Compare local files against latest and deployed revisions in Apigee.
+#                     Requires --env (to identify the deployed revision) and --org or config.
+#                     Reports ✓ in sync or ✗ differs with a list of changed files.
 #
 # Examples:
 #   apigee-push -a                                      # zip all bundles
@@ -52,6 +56,8 @@
 #   apigee-push -e dev -a                               # zip + upload all to nonprod
 #   apigee-push -e dev -d ais-openai-direct-v2          # zip + upload + deploy one
 #   apigee-push -e prod -d -a                           # zip + upload + deploy all to prod
+#   apigee-push -e dev -C ais-openai-direct-v2          # check one bundle vs dev
+#   apigee-push -e stage -C -a                          # check all bundles vs stage
 
 set -euo pipefail
 
@@ -83,6 +89,7 @@ UPLOAD=true
 DEPLOY=true
 DOWNLOAD=false
 DEPLOYED=false
+CHECK=false
 REVISION=""
 ALL=false
 VERBOSE=false
@@ -99,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     -u|--upload)   UPLOAD=true; shift ;;
     -d|--deploy)   DEPLOY=true; shift ;;
     -D|--download) DOWNLOAD=true; UPLOAD=false; DEPLOY=false; shift ;;
+    -C|--check-version) CHECK=true; UPLOAD=false; DEPLOY=false; DOWNLOAD=false; shift ;;
     --deployed)    DEPLOYED=true; shift ;;
     -r|--revision) REVISION="$2"; shift 2 ;;
     -e|--env)      ENV="$2"; shift 2 ;;
@@ -219,7 +227,9 @@ for BUNDLE in "${TARGETS[@]}"; do
   fi
 done
 echo ""
-if $DOWNLOAD && [[ -n "$REVISION" ]]; then
+if $CHECK; then
+  echo "Action: check local vs latest + deployed revisions in env '$ENV' (org: $ORG)"
+elif $DOWNLOAD && [[ -n "$REVISION" ]]; then
   echo "Action: download revision $REVISION from org '$ORG' to $CWD"
 elif $DOWNLOAD && $DEPLOYED; then
   echo "Action: download deployed revision from env '$ENV' (org: $ORG) to $CWD"
@@ -248,7 +258,7 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # ── Resolve token once ────────────────────────────────────────────────────────
-if ($UPLOAD || $DOWNLOAD) && [[ -z "$TOKEN" ]]; then
+if ($UPLOAD || $DOWNLOAD || $CHECK) && [[ -z "$TOKEN" ]]; then
   if [[ -n "$SA_KEY_FILE" ]]; then
     echo "Authenticating with $SA_KEY_FILE ..."
     cfg="apigee-push-$$"
@@ -437,6 +447,94 @@ download_bundle() {
   echo "  ✓ extracted to $dest"
 }
 
+check_bundle() {
+  local type="$1" name="$2" local_src="$3"
+  local resp latest_rev deployed_rev
+
+  # Get latest revision (highest number)
+  if [[ "$type" == "apiproxy" ]]; then
+    resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions" \
+      -H "Authorization: Bearer ${TOKEN}") || true
+  else
+    resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions" \
+      -H "Authorization: Bearer ${TOKEN}") || true
+  fi
+  latest_rev=$(echo "$resp" | jq -r '[.[] | tonumber] | max | tostring' 2>/dev/null) || true
+
+  # Get deployed revision for --env
+  deployed_rev=""
+  if [[ -n "$ENV" ]]; then
+    if [[ "$type" == "apiproxy" ]]; then
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/apis/${name}/deployments" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    else
+      resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/sharedflows/${name}/deployments" \
+        -H "Authorization: Bearer ${TOKEN}") || true
+    fi
+    deployed_rev=$(echo "$resp" | jq -r '.deployments[0].revision // empty' 2>/dev/null) || true
+  fi
+
+  echo "  Latest revision : ${latest_rev:-unknown}"
+  echo "  Deployed ($ENV)  : ${deployed_rev:-not deployed}"
+
+  # Downloads a revision to a temp dir and diffs against local source
+  _diff_rev() {
+    local rev="$1" label="$2"
+    local zip="$WORK_DIR/${name}-rev${rev}-check.zip"
+    local extract_dir="$WORK_DIR/${name}-rev${rev}-check"
+
+    if [[ "$type" == "apiproxy" ]]; then
+      curl -s -o "$zip" \
+        "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions/${rev}?format=bundle" \
+        -H "Authorization: Bearer ${TOKEN}" || true
+    else
+      curl -s -o "$zip" \
+        "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions/${rev}?format=bundle" \
+        -H "Authorization: Bearer ${TOKEN}" || true
+    fi
+
+    if [[ ! -f "$zip" || ! -s "$zip" ]]; then
+      echo "  ERROR: could not download rev $rev for comparison"
+      return
+    fi
+
+    mkdir -p "$extract_dir"
+    unzip -q "$zip" -d "$extract_dir"
+
+    local inner_dir="$extract_dir/$type"
+    if [[ ! -d "$inner_dir" ]]; then
+      echo "  ERROR: expected '$type/' folder inside rev $rev zip"
+      return
+    fi
+
+    # Build a clean local copy (strip .git and .md — same as what apigee-push uploads)
+    local local_clean="$WORK_DIR/${name}-local-clean"
+    rm -rf "$local_clean"
+    cp -r "$local_src" "$local_clean"
+    find "$local_clean" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+    find "$local_clean" -name "*.md" -type f -delete 2>/dev/null || true
+
+    local diff_out
+    diff_out=$(diff -rq "$local_clean" "$inner_dir" 2>/dev/null) || true
+    if [[ -z "$diff_out" ]]; then
+      echo "  ✓ $label (rev $rev): in sync with local"
+    else
+      echo "  ✗ $label (rev $rev): differs from local"
+      echo "$diff_out" | sed 's/^/      /'
+    fi
+  }
+
+  if [[ -n "$latest_rev" ]]; then
+    _diff_rev "$latest_rev" "Latest"
+  fi
+
+  if [[ -n "$deployed_rev" && "$deployed_rev" != "$latest_rev" ]]; then
+    _diff_rev "$deployed_rev" "Deployed"
+  elif [[ -n "$deployed_rev" && "$deployed_rev" == "$latest_rev" ]]; then
+    echo "  (deployed rev matches latest — no separate diff needed)"
+  fi
+}
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 ERRORS=0
 for BUNDLE in "${TARGETS[@]}"; do
@@ -486,6 +584,13 @@ for BUNDLE in "${TARGETS[@]}"; do
     if [[ -n "$REV" ]]; then
       download_bundle "$INNER" "$BUNDLE_NAME" "$REV"
     fi
+    continue
+  fi
+
+  if $CHECK; then
+    echo "Checking: $BUNDLE_NAME ($INNER)"
+    check_bundle "$INNER" "$BUNDLE_NAME" "$SRC"
+    echo ""
     continue
   fi
 
