@@ -44,6 +44,7 @@
 #   -t, --token <tok> Bearer token (overrides all auth methods)
 #   -a, --all         Process all bundles found in current directory
 #   -v, --verbose     Print full API responses for upload and deploy
+#   -y, --yes         Skip confirmation prompt (non-interactive / scripting)
 #   -C, --check-version
 #                     Compare local files against latest and deployed revisions in Apigee.
 #                     Requires --env (to identify the deployed revision) and --org or config.
@@ -117,7 +118,7 @@ while [[ $# -gt 0 ]]; do
     -v|--verbose)  VERBOSE=true; shift ;;
     -y|--yes)      YES=true; shift ;;
     --help|-h)
-      sed -n '3,45p' "$0" | sed 's/^# \?//'
+      sed -n '3,62p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     --*) echo "Unknown option: $1"; exit 1 ;;
