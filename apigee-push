@@ -443,8 +443,15 @@ download_bundle() {
     return
   fi
 
-  rm -rf "$dest"
-  mv "$inner_dir" "$dest"
+  if [[ -d "$dest" ]]; then
+    # Preserve .git and any non-Apigee files (README.md etc) that Apigee doesn't know about
+    find "$inner_dir" -mindepth 1 -maxdepth 1 | while read -r item; do
+      rm -rf "$dest/$(basename "$item")"
+      mv "$item" "$dest/"
+    done
+  else
+    mv "$inner_dir" "$dest"
+  fi
   echo "  ✓ extracted to $dest"
 }
 
