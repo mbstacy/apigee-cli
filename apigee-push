@@ -546,6 +546,36 @@ check_bundle() {
   fi
 }
 
+# ── Git branch check ─────────────────────────────────────────────────────────
+check_git_branch() {
+  local bundle_dir="$1"
+  local expected_branch=""
+  case "$ENV" in
+    dev|test|sand) expected_branch="development" ;;
+    stage)         expected_branch="stage" ;;
+    prod)          expected_branch="main" ;;
+  esac
+  [[ -z "$expected_branch" ]] && return
+
+  if ! git -C "$bundle_dir" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    return  # not a git repo, skip
+  fi
+
+  local current_branch
+  current_branch=$(git -C "$bundle_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || return
+
+  if [[ "$current_branch" != "$expected_branch" ]]; then
+    echo "  ⚠  WARNING: '$bundle_dir' is on branch '$current_branch' (expected '$expected_branch' for env '$ENV')"
+    if ! $YES; then
+      read -r -p "  Continue anyway? [y/N] " BRANCH_CONFIRM
+      case "$BRANCH_CONFIRM" in
+        y|Y) ;;
+        *) echo "  Aborted."; exit 0 ;;
+      esac
+    fi
+  fi
+}
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 ERRORS=0
 for BUNDLE in "${TARGETS[@]}"; do
@@ -603,6 +633,10 @@ for BUNDLE in "${TARGETS[@]}"; do
     check_bundle "$INNER" "$BUNDLE_NAME" "$SRC"
     echo ""
     continue
+  fi
+
+  if $UPLOAD; then
+    check_git_branch "$SRC"
   fi
 
   ZIP="$WORK_DIR/${BUNDLE_NAME}.zip"
