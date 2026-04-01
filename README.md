@@ -1,4 +1,4 @@
-# apigee-push
+# apigee-cli
 
 A single-file CLI tool to bundle, upload, and deploy Apigee X proxy and shared flow bundles — all in one command.
 
@@ -11,7 +11,7 @@ Automatically detects bundle type (`apiproxy` vs `sharedflowbundle`) and name fr
 - Zips, uploads, and deploys in one step
 - Auto-detects bundle type and name from XML descriptor
 - Supports proxies and shared flows
-- Per-environment org and SA key config via `~/.apigee-push`
+- Per-environment org and SA key config via `~/.apigee-cli`
 - `--all` flag to process every bundle in the current directory
 - `--download` to pull a revision from Apigee back to local
 - `--yes` for non-interactive use (CI, scripting, Claude Code skill)
@@ -45,15 +45,15 @@ Pick a directory on your `PATH` and copy the script there. Common choices:
 # Replace TARGET_DIR with your preferred location, e.g. ~/.local/bin
 TARGET_DIR=~/.local/bin
 mkdir -p "$TARGET_DIR"
-curl -fsSL https://raw.githubusercontent.com/markstacy/apigee-push/main/apigee-push -o "$TARGET_DIR/apigee-push"
-chmod +x "$TARGET_DIR/apigee-push"
+curl -fsSL https://raw.githubusercontent.com/markstacy/apigee-cli/main/apigee-cli -o "$TARGET_DIR/apigee-cli"
+chmod +x "$TARGET_DIR/apigee-cli"
 ```
 
 **Or clone and symlink (easier to update later):**
 
 ```bash
-git clone https://github.com/markstacy/apigee-push.git ~/github/apigee-push
-ln -sf ~/github/apigee-push/apigee-push ~/.local/bin/apigee-push
+git clone https://github.com/markstacy/apigee-cli.git ~/github/apigee-cli
+ln -sf ~/github/apigee-cli/apigee-cli ~/.local/bin/apigee-cli
 ```
 
 Then `git pull` in the cloned folder whenever you want to update.
@@ -72,7 +72,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Configuration
 
-Create `~/.apigee-push` with your org names and service account key paths per environment:
+Create `~/.apigee-cli` with your org names and service account key paths per environment:
 
 ```bash
 DEV_ORG=my-nonprod-org
@@ -93,14 +93,14 @@ PROD_SA_KEY=$HOME/.ssh/apigee/prod.json
 
 All values can be overridden per-run with `-o/--org` or `-k/--sa-key`.
 
-If no SA key is configured, `apigee-push` falls back to your active `gcloud` session (`gcloud auth print-access-token`).
+If no SA key is configured, `apigee-cli` falls back to your active `gcloud` session (`gcloud auth print-access-token`).
 
 ---
 
 ## Usage
 
 ```
-apigee-push [OPTIONS] [FOLDER_NAME ...]
+apigee-cli [OPTIONS] [FOLDER_NAME ...]
 ```
 
 ### Options
@@ -124,35 +124,35 @@ apigee-push [OPTIONS] [FOLDER_NAME ...]
 
 ```bash
 # Zip only (no upload)
-apigee-push ais-openai-direct-v2
+apigee-cli ais-openai-direct-v2
 
 # Zip all bundles in current directory
-apigee-push -a
+apigee-cli -a
 
 # Upload one bundle to dev (zip + upload, no deploy)
-apigee-push -e dev ais-openai-direct-v2
+apigee-cli -e dev ais-openai-direct-v2
 
 # Upload and deploy one bundle to dev
-apigee-push -e dev -d ais-openai-direct-v2
+apigee-cli -e dev -d ais-openai-direct-v2
 
 # Upload and deploy all bundles to stage
-apigee-push -e stage -d -a
+apigee-cli -e stage -d -a
 
 # Upload and deploy to prod (non-interactive)
-apigee-push -e prod -d --yes adex-ais-cors ais-openai-direct-v2
+apigee-cli -e prod -d --yes adex-ais-cors ais-openai-direct-v2
 
 # Download the latest revision of a proxy from dev
-apigee-push -D -e dev ais-openai-direct-v2
+apigee-cli -D -e dev ais-openai-direct-v2
 
 # Download the currently deployed revision
-apigee-push -D -e stage --deployed ais-openai-direct-v2
+apigee-cli -D -e stage --deployed ais-openai-direct-v2
 ```
 
 ---
 
 ## Bundle detection
 
-`apigee-push` determines bundle type by folder structure:
+`apigee-cli` determines bundle type by folder structure:
 
 - Folder contains `proxies/` → `apiproxy`
 - Folder contains `sharedflows/` → `sharedflowbundle`

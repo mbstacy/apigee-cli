@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apigee-push — Bundle, upload, and deploy Apigee proxies and shared flows
+# apigee-cli — Manage Apigee proxy and shared flow bundles
 #
 # Description:
 #   Packages a proxy or shared flow folder into a zip, uploads it to Apigee X,
@@ -8,11 +8,11 @@
 #   from the folder structure and XML descriptor.
 #
 # Config:
-#   Create $HOME/.apigee-push to set org names and SA key paths per environment.
-#   If the file is missing, built-in defaults are used. All values can be
-#   overridden per-run with -o/--org or -k/--sa-key.
+#   Create $HOME/.apigee-cli to set org names and SA key paths per environment.
+#   If the file is missing, falls back to $HOME/.apigee-push for backwards compatibility.
+#   All values can be overridden per-run with -o/--org or -k/--sa-key.
 #
-#   Example $HOME/.apigee-push:
+#   Example $HOME/.apigee-cli:
 #     DEV_ORG=my-nonprod-org
 #     DEV_SA_KEY=$HOME/.ssh/apigee/nonprod.json
 #     TEST_ORG=my-nonprod-org
@@ -25,7 +25,7 @@
 #     PROD_SA_KEY=$HOME/.ssh/apigee/prod.json
 #
 # Usage:
-#   apigee-push [OPTIONS] [FOLDER_NAME ...]
+#   apigee-cli [OPTIONS] [FOLDER_NAME ...]
 #
 # Options:
 #   -u, --upload      Upload bundles to Apigee after zipping
@@ -51,34 +51,36 @@
 #                     Reports ✓ in sync or ✗ differs with a list of changed files.
 #
 # Examples:
-#   apigee-push -a                                      # zip all bundles
-#   apigee-push ais-bedrock-llm                         # zip one bundle
-#   apigee-push -e dev ais-bedrock-llm                  # zip + upload to nonprod
-#   apigee-push -e dev -a                               # zip + upload all to nonprod
-#   apigee-push -e dev -d ais-openai-direct-v2          # zip + upload + deploy one
-#   apigee-push -e prod -d -a                           # zip + upload + deploy all to prod
-#   apigee-push -e dev -C ais-openai-direct-v2          # check one bundle vs dev
-#   apigee-push -e stage -C -a                          # check all bundles vs stage
+#   apigee-cli -a                                      # zip all bundles
+#   apigee-cli ais-bedrock-llm                         # zip one bundle
+#   apigee-cli -e dev ais-bedrock-llm                  # zip + upload to nonprod
+#   apigee-cli -e dev -a                               # zip + upload all to nonprod
+#   apigee-cli -e dev -d ais-openai-direct-v2          # zip + upload + deploy one
+#   apigee-cli -e prod -d -a                           # zip + upload + deploy all to prod
+#   apigee-cli -e dev -C ais-openai-direct-v2          # check one bundle vs dev
+#   apigee-cli -e stage -C -a                          # check all bundles vs stage
 
 set -euo pipefail
 
-# ── Load user config (~/.apigee-push) ────────────────────────────────────────
-APIGEE_PUSH_CONFIG="${HOME}/.apigee-push"
-if [[ -f "$APIGEE_PUSH_CONFIG" ]]; then
-  # shellcheck source=/dev/null
-  source "$APIGEE_PUSH_CONFIG"
+# ── Load user config (~/.apigee-cli, fallback to ~/.apigee-push) ─────────────
+if [[ -f "${HOME}/.apigee-cli" ]]; then
+  APIGEE_CLI_CONFIG="${HOME}/.apigee-cli"
+elif [[ -f "${HOME}/.apigee-push" ]]; then
+  APIGEE_CLI_CONFIG="${HOME}/.apigee-push"
 else
-  echo "ERROR: config file not found: $APIGEE_PUSH_CONFIG"
+  echo "ERROR: config file not found: ${HOME}/.apigee-cli"
   echo "       Create it with your org names and SA key paths."
-  echo "       Run: apigee-push --help for an example."
+  echo "       Run: apigee-cli --help for an example."
   exit 1
 fi
+# shellcheck source=/dev/null
+source "$APIGEE_CLI_CONFIG"
 
 # Validate required config variables are set
 config_errors=0
 for var in DEV_ORG DEV_SA_KEY TEST_ORG TEST_SA_KEY SAND_ORG SAND_SA_KEY STAGE_ORG STAGE_SA_KEY PROD_ORG PROD_SA_KEY; do
   if [[ -z "${!var:-}" ]]; then
-    echo "ERROR: $var is not set in $APIGEE_PUSH_CONFIG"
+    echo "ERROR: $var is not set in $APIGEE_CLI_CONFIG"
     config_errors=$((config_errors + 1))
   fi
 done
@@ -145,21 +147,21 @@ fi
 
 if [[ -n "$SA_KEY_FILE" && ! -f "$SA_KEY_FILE" ]]; then
   echo "ERROR: SA key file not found: $SA_KEY_FILE"
-  if [[ ! -f "$APIGEE_PUSH_CONFIG" ]]; then
-    echo "       No config file found at $APIGEE_PUSH_CONFIG"
+  if [[ ! -f "$APIGEE_CLI_CONFIG" ]]; then
+    echo "       No config file found at $APIGEE_CLI_CONFIG"
     echo "       Create it to set custom SA key paths. Run: apigee-push --help"
   else
-    echo "       Check ${ENV_PREFIX}_SA_KEY in $APIGEE_PUSH_CONFIG"
+    echo "       Check ${ENV_PREFIX}_SA_KEY in $APIGEE_CLI_CONFIG"
   fi
   exit 1
 fi
 
 if $UPLOAD && [[ -n "$ENV" && -z "$ORG" ]]; then
   echo "ERROR: no org configured for env '$ENV'"
-  if [[ ! -f "$APIGEE_PUSH_CONFIG" ]]; then
-    echo "       Create $APIGEE_PUSH_CONFIG or use -o/--org to specify the org"
+  if [[ ! -f "$APIGEE_CLI_CONFIG" ]]; then
+    echo "       Create $APIGEE_CLI_CONFIG or use -o/--org to specify the org"
   else
-    echo "       Check ${ENV_PREFIX}_ORG in $APIGEE_PUSH_CONFIG"
+    echo "       Check ${ENV_PREFIX}_ORG in $APIGEE_CLI_CONFIG"
   fi
   exit 1
 fi
