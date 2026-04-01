@@ -576,6 +576,70 @@ check_git_branch() {
   fi
 }
 
+# ── Pre-deploy check: warn if deployed revision differs from local ────────────
+precheck_deployed() {
+  local type="$1" name="$2" local_src="$3"
+  local resp deployed_rev zip extract_dir inner_dir local_clean diff_out
+
+  # Get currently deployed revision
+  if [[ "$type" == "apiproxy" ]]; then
+    resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/apis/${name}/deployments" \
+      -H "Authorization: Bearer ${TOKEN}") || true
+  else
+    resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/sharedflows/${name}/deployments" \
+      -H "Authorization: Bearer ${TOKEN}") || true
+  fi
+  deployed_rev=$(echo "$resp" | jq -r '.deployments[0].revision // empty' 2>/dev/null) || true
+
+  if [[ -z "$deployed_rev" ]]; then
+    return  # nothing deployed yet, no check needed
+  fi
+
+  # Download deployed revision to temp dir
+  zip="$WORK_DIR/${name}-predeploy-rev${deployed_rev}.zip"
+  extract_dir="$WORK_DIR/${name}-predeploy-rev${deployed_rev}"
+  if [[ "$type" == "apiproxy" ]]; then
+    curl -s -o "$zip" \
+      "https://apigee.googleapis.com/v1/organizations/${ORG}/apis/${name}/revisions/${deployed_rev}?format=bundle" \
+      -H "Authorization: Bearer ${TOKEN}" || true
+  else
+    curl -s -o "$zip" \
+      "https://apigee.googleapis.com/v1/organizations/${ORG}/sharedflows/${name}/revisions/${deployed_rev}?format=bundle" \
+      -H "Authorization: Bearer ${TOKEN}" || true
+  fi
+
+  if [[ ! -f "$zip" || ! -s "$zip" ]]; then
+    return  # can't download, skip check
+  fi
+
+  mkdir -p "$extract_dir"
+  unzip -q "$zip" -d "$extract_dir"
+  inner_dir="$extract_dir/$type"
+  [[ ! -d "$inner_dir" ]] && return
+
+  # Clean local copy the same way check_bundle does
+  local_clean="$WORK_DIR/${name}-predeploy-local"
+  rm -rf "$local_clean"
+  cp -r "$local_src" "$local_clean"
+  find "$local_clean" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$local_clean" -name "*.md" -type f -delete 2>/dev/null || true
+  find "$local_clean" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
+  find "$inner_dir" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
+
+  diff_out=$(diff -rq "$local_clean" "$inner_dir" 2>/dev/null) || true
+  if [[ -n "$diff_out" ]]; then
+    echo "  ⚠  WARNING: deployed rev $deployed_rev in '$ENV' differs from local — someone may have updated it"
+    echo "$diff_out" | sed 's/^/      /'
+    if ! $YES; then
+      read -r -p "  Deploy anyway? [y/N] " PRECHECK_CONFIRM
+      case "$PRECHECK_CONFIRM" in
+        y|Y) ;;
+        *) echo "  Aborted."; exit 0 ;;
+      esac
+    fi
+  fi
+}
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 ERRORS=0
 for BUNDLE in "${TARGETS[@]}"; do
@@ -637,6 +701,10 @@ for BUNDLE in "${TARGETS[@]}"; do
 
   if $UPLOAD; then
     check_git_branch "$SRC"
+  fi
+
+  if $DEPLOY; then
+    precheck_deployed "$INNER" "$BUNDLE_NAME" "$SRC"
   fi
 
   ZIP="$WORK_DIR/${BUNDLE_NAME}.zip"
