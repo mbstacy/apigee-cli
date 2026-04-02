@@ -1,8 +1,6 @@
 # apigee-cli
 
-A single-file CLI tool to bundle, upload, and deploy Apigee X proxy and shared flow bundles — all in one command.
-
-Automatically detects bundle type (`apiproxy` vs `sharedflowbundle`) and name from the folder structure, authenticates via a service account key or your active `gcloud` session, and deploys to any environment.
+CLI tool for managing Apigee X proxy and shared flow bundles. Packages folders into zips, uploads to Apigee, deploys revisions, downloads from Apigee, compares local vs remote, and lists what's deployed.
 
 ---
 
@@ -13,87 +11,87 @@ Automatically detects bundle type (`apiproxy` vs `sharedflowbundle`) and name fr
 - Supports proxies and shared flows
 - Per-environment org and SA key config via `~/.apigee-cli`
 - `--all` flag to process every bundle in the current directory
+- `--list` to show all proxies/shared flows deployed in an environment
+- `--check-version` to compare local files against Apigee revisions
 - `--download` to pull a revision from Apigee back to local
 - `--yes` for non-interactive use (CI, scripting, Claude Code skill)
+- Git branch safety check before deploy
 
 ---
 
-## Requirements
+## Prerequisites
 
 - `bash` 4+
 - [`gcloud`](https://cloud.google.com/sdk/docs/install) (for authentication)
 - `curl`
 - `jq`
 - `zip` / `unzip`
+- Service account key files for your Apigee orgs
 
 ---
 
 ## Installation
 
-Pick a directory on your `PATH` and copy the script there. Common choices:
-
-| Location | Who it's for |
-|----------|-------------|
-| `/usr/local/bin` | All users on the machine (requires `sudo`) |
-| `~/.local/bin` | Your user only — standard on most Linux distros |
-| `~/bin` | Your user only — common on macOS |
-| `~/local/bin` | Your user only — if that's your convention |
-
-**Quick install (pick your target dir):**
+Run the install script from the repo root:
 
 ```bash
-# Replace TARGET_DIR with your preferred location, e.g. ~/.local/bin
-TARGET_DIR=~/.local/bin
-mkdir -p "$TARGET_DIR"
-curl -fsSL https://raw.githubusercontent.com/markstacy/apigee-cli/main/apigee-cli -o "$TARGET_DIR/apigee-cli"
-chmod +x "$TARGET_DIR/apigee-cli"
+./install.sh
 ```
 
-**Or clone and symlink (easier to update later):**
+This will:
+1. Copy `apigee-cli` to `~/local/bin/` and make it executable
+2. Install the Claude Code `/apigee-cli` slash command to `~/.claude/commands/`
+3. Interactively prompt for your Apigee org names and SA key file paths, then create `~/.apigee-cli`
+
+Make sure `~/local/bin` is on your PATH:
 
 ```bash
-git clone https://github.com/markstacy/apigee-cli.git ~/github/apigee-cli
-ln -sf ~/github/apigee-cli/apigee-cli ~/.local/bin/apigee-cli
+# Add to your ~/.bashrc or ~/.zshrc if not already there
+export PATH="$HOME/local/bin:$PATH"
 ```
 
-Then `git pull` in the cloned folder whenever you want to update.
-
-**Make sure your chosen directory is on your PATH:**
+**Or install manually:**
 
 ```bash
-# Check first — it may already be there
-echo "$PATH" | tr ':' '\n' | grep local
+# Copy the script
+cp apigee-cli ~/local/bin/apigee-cli
+chmod +x ~/local/bin/apigee-cli
 
-# If not, add to ~/.zshrc or ~/.bashrc
-export PATH="$HOME/.local/bin:$PATH"
+# Copy the Claude Code skill (optional)
+cp claude/apigee-cli.md ~/.claude/commands/apigee-cli.md
+
+# Create the config
+cp ~/.apigee-cli.example ~/.apigee-cli   # then edit with your values
 ```
 
 ---
 
 ## Configuration
 
-Create `~/.apigee-cli` with your org names and service account key paths per environment:
+Create `~/.apigee-cli` with your org names and service account key paths:
 
 ```bash
 DEV_ORG=my-nonprod-org
-DEV_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+DEV_SA_KEY=/path/to/your/nonprod-sa-key.json
 
 TEST_ORG=my-nonprod-org
-TEST_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+TEST_SA_KEY=/path/to/your/nonprod-sa-key.json
 
 SAND_ORG=my-nonprod-org
-SAND_SA_KEY=$HOME/.ssh/apigee/nonprod.json
+SAND_SA_KEY=/path/to/your/nonprod-sa-key.json
 
 STAGE_ORG=my-preprod-org
-STAGE_SA_KEY=$HOME/.ssh/apigee/preprod.json
+STAGE_SA_KEY=/path/to/your/preprod-sa-key.json
 
 PROD_ORG=my-prod-org
-PROD_SA_KEY=$HOME/.ssh/apigee/prod.json
+PROD_SA_KEY=/path/to/your/prod-sa-key.json
 ```
 
-All values can be overridden per-run with `-o/--org` or `-k/--sa-key`.
+Each environment maps to its own org and SA key. The `--env` flag selects which pair to use. You can override per-run with `-o/--org` or `-k/--sa-key`.
 
 If no SA key is configured, `apigee-cli` falls back to your active `gcloud` session (`gcloud auth print-access-token`).
+
+Falls back to `~/.apigee-push` if `~/.apigee-cli` doesn't exist (backwards compatibility).
 
 ---
 
@@ -107,46 +105,62 @@ apigee-cli [OPTIONS] [FOLDER_NAME ...]
 
 | Flag | Description |
 |------|-------------|
-| `-u, --upload` | Upload bundle(s) to Apigee after zipping |
-| `-d, --deploy` | Deploy uploaded revision to `--env` (requires `--env`) |
-| `-D, --download` | Download latest revision from Apigee to local folder |
-| `--deployed` | Use with `-D` to download the currently deployed revision |
-| `-r, --revision N` | Use with `-D` to download a specific revision number |
-| `-e, --env <env>` | Target environment: `dev`, `test`, `sand`, `stage`, `prod` |
-| `-o, --org <org>` | Override the org derived from `--env` |
-| `-k, --sa-key <f>` | Override the SA key file derived from `--env` |
-| `-t, --token <tok>` | Bearer token (overrides all auth methods) |
-| `-a, --all` | Process all bundles found in current directory |
-| `-v, --verbose` | Print full API responses |
-| `-y, --yes` | Skip confirmation prompt (non-interactive) |
+| `-u`, `--upload` | Upload bundles to Apigee after zipping |
+| `-d`, `--deploy` | Deploy uploaded revision to `--env` after upload |
+| `-D`, `--download` | Download revision from Apigee into local folder |
+| `--deployed` | Use with `-D` to get the currently deployed revision |
+| `-r`, `--revision N` | Use with `-D` to download a specific revision |
+| `-L`, `--list` | List all proxies and/or shared flows in an environment |
+| `-C`, `--check-version` | Compare local files against latest + deployed revisions in Apigee |
+| `-e`, `--env <env>` | Target environment: `dev`, `test`, `sand`, `stage`, `prod` |
+| `-o`, `--org <org>` | Override the org derived from `--env` |
+| `-k`, `--sa-key <file>` | Override the SA key file derived from `--env` |
+| `-t`, `--token <tok>` | Bearer token (overrides all auth methods) |
+| `-a`, `--all` | Process all bundles found in current directory |
+| `-v`, `--verbose` | Print full API responses |
+| `-y`, `--yes` | Skip confirmation prompts |
 
 ### Examples
 
 ```bash
+# Deploy
+apigee-cli -e dev -d ais-openai-direct-v2          # deploy one bundle to dev
+apigee-cli -e prod -d -a                           # deploy all bundles to prod
+
+# Upload only (no deploy)
+apigee-cli -e dev ais-bedrock-llm                  # upload one bundle
+apigee-cli -e dev -a                               # upload all bundles
+
+# List
+apigee-cli -e dev -L                               # list all proxies + shared flows in dev
+apigee-cli -e dev -L proxies                       # list only proxies
+apigee-cli -e dev -L sharedflows                   # list only shared flows
+
+# Check local vs remote
+apigee-cli -e dev -C ais-openai-direct-v2          # check one bundle vs dev
+apigee-cli -e stage -C -a                          # check all bundles vs stage
+
+# Download
+apigee-cli -e dev -D ais-openai-direct-v2          # download latest revision
+apigee-cli -e dev -D --deployed ais-openai-direct-v2  # download deployed revision
+apigee-cli -e dev -D -r 5 ais-openai-direct-v2    # download specific revision
+
 # Zip only (no upload)
-apigee-cli ais-openai-direct-v2
-
-# Zip all bundles in current directory
-apigee-cli -a
-
-# Upload one bundle to dev (zip + upload, no deploy)
-apigee-cli -e dev ais-openai-direct-v2
-
-# Upload and deploy one bundle to dev
-apigee-cli -e dev -d ais-openai-direct-v2
-
-# Upload and deploy all bundles to stage
-apigee-cli -e stage -d -a
-
-# Upload and deploy to prod (non-interactive)
-apigee-cli -e prod -d --yes adex-ais-cors ais-openai-direct-v2
-
-# Download the latest revision of a proxy from dev
-apigee-cli -D -e dev ais-openai-direct-v2
-
-# Download the currently deployed revision
-apigee-cli -D -e stage --deployed ais-openai-direct-v2
+apigee-cli -a                                      # zip all bundles
+apigee-cli ais-bedrock-llm                         # zip one bundle
 ```
+
+### Environment-to-branch mapping
+
+When deploying, `apigee-cli` checks your git branch against the expected branch for the target environment:
+
+| Environment | Expected branch |
+|-------------|----------------|
+| dev, test, sand | `development` |
+| stage | `stage` |
+| prod | `main` |
+
+A warning is shown if the branch doesn't match — you can still proceed.
 
 ---
 
@@ -159,15 +173,25 @@ apigee-cli -D -e stage --deployed ais-openai-direct-v2
 
 The canonical bundle name is read from the root XML descriptor (`APIProxy` or `SharedFlowBundle` `name` attribute), not the folder name.
 
-`.git` directories are always excluded from the zip.
+`.git` directories and `.md` files are always excluded from the zip.
 
 ---
 
-## Claude Code skill
+## Claude Code integration
 
-If you use [Claude Code](https://claude.ai/code), you can add an `/apigee` slash command that wraps this tool with context awareness — auto-detecting changed bundles, enforcing shared-flow-before-proxy deploy order, and accepting natural language arguments.
+The `/apigee-cli` slash command provides a natural-language interface to `apigee-cli` within Claude Code. It parses arguments like `dev openai` or `stage -C` and runs the appropriate command.
 
-See [`claude/apigee.md`](claude/apigee.md) for the skill definition.
+The skill file is installed to `~/.claude/commands/apigee-cli.md` by the install script.
+
+### Slash command examples
+
+```
+/apigee-cli dev deploy openai        # deploy ais-openai-direct-v2 to dev
+/apigee-cli stage -C                 # check all bundles against stage
+/apigee-cli dev -L proxies           # list proxies in dev
+```
+
+See [`claude/apigee-cli.md`](claude/apigee-cli.md) for the skill definition.
 
 ---
 

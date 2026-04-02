@@ -1,8 +1,8 @@
 Bundle, upload, and deploy Apigee proxy/shared flow bundles using the following arguments: $ARGUMENTS
 
-The apigee-push script is installed on PATH. Always run it from the working directory containing the Apigee bundle folders.
+The apigee-cli script is installed on PATH. Always run it from the working directory containing the Apigee bundle folders.
 
-## apigee-push flags (pass these through directly — do not reinterpret)
+## apigee-cli flags (pass these through directly — do not reinterpret)
 
 | Flag | Meaning |
 |------|---------|
@@ -14,7 +14,7 @@ The apigee-push script is installed on PATH. Always run it from the working dire
 | `-a` / `--all` | Process all bundles in current directory |
 | `-v` / `--verbose` | Print full API responses |
 
-If $ARGUMENTS contains any of these flags, pass them straight to apigee-push without reinterpreting. Always append `--yes` and `-e <env>`.
+If $ARGUMENTS contains any of these flags, pass them straight to apigee-cli without reinterpreting. Always append `--yes` and `-e <env>`.
 
 ## Argument parsing
 
@@ -41,7 +41,7 @@ Examples:
 
 2. Identify which bundles:
    - If bundle names were provided (or partial names), resolve to full folder names
-   - If `-a` was given, pass `-a` to apigee-push
+   - If `-a` was given, pass `-a` to apigee-cli
    - If no bundle names and no `-a`, run `git diff --name-only HEAD` to find changed bundle folders
 
 3. Order the bundles (deploy mode only): shared flows first, then proxies.
@@ -50,13 +50,13 @@ Examples:
 
 4. For deploy mode: show what will be deployed and ask for confirmation. For prod, warn explicitly.
 
-5. Run apigee-push:
-   - Check:  `apigee-push -e <env> -C --yes <bundles...>`
-   - Deploy: `apigee-push -e <env> -d --yes <bundles...>`
-   - All:    `apigee-push -e <env> -C --yes -a` or `apigee-push -e <env> -d --yes -a`
+5. Run apigee-cli:
+   - Check:  `apigee-cli -e <env> -C --yes <bundles...>`
+   - Deploy: `apigee-cli -e <env> -d --yes <bundles...>`
+   - All:    `apigee-cli -e <env> -C --yes -a` or `apigee-cli -e <env> -d --yes -a`
 
 6. Report the result.
 
 ## Notes
-- The script handles authentication via ~/.apigee-push config automatically
+- The script handles authentication via ~/.apigee-cli config automatically
 - If a bundle folder doesn't exist locally, skip it with a warning

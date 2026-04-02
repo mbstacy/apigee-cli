@@ -1,64 +1,6 @@
 #!/usr/bin/env bash
 # apigee-cli — Manage Apigee proxy and shared flow bundles
-#
-# Description:
-#   Packages a proxy or shared flow folder into a zip, uploads it to Apigee X,
-#   and optionally deploys the new revision to an environment — all in one command.
-#   Bundle type (apiproxy vs sharedflowbundle) and name are detected automatically
-#   from the folder structure and XML descriptor.
-#
-# Config:
-#   Create $HOME/.apigee-cli to set org names and SA key paths per environment.
-#   If the file is missing, falls back to $HOME/.apigee-push for backwards compatibility.
-#   All values can be overridden per-run with -o/--org or -k/--sa-key.
-#
-#   Example $HOME/.apigee-cli:
-#     DEV_ORG=my-nonprod-org
-#     DEV_SA_KEY=$HOME/.ssh/apigee/nonprod.json
-#     TEST_ORG=my-nonprod-org
-#     TEST_SA_KEY=$HOME/.ssh/apigee/nonprod.json
-#     SAND_ORG=my-nonprod-org
-#     SAND_SA_KEY=$HOME/.ssh/apigee/nonprod.json
-#     STAGE_ORG=my-preprod-org
-#     STAGE_SA_KEY=$HOME/.ssh/apigee/preprod.json
-#     PROD_ORG=my-prod-org
-#     PROD_SA_KEY=$HOME/.ssh/apigee/prod.json
-#
-# Usage:
-#   apigee-cli [OPTIONS] [FOLDER_NAME ...]
-#
-# Options:
-#   -u, --upload      Upload bundles to Apigee after zipping
-#   -d, --deploy      Deploy uploaded revision to --env after upload (requires --env)
-#   -D, --download    Download latest revision from Apigee into local folder
-#       --deployed    Use with -D to download the currently deployed revision for --env
-#   -r, --revision N  Use with -D to download a specific revision number
-#   -e, --env <env>   Sets org + SA key from config (each env is independent):
-#                       dev   → DEV_ORG   / DEV_SA_KEY
-#                       test  → TEST_ORG  / TEST_SA_KEY
-#                       sand  → SAND_ORG  / SAND_SA_KEY
-#                       stage → STAGE_ORG / STAGE_SA_KEY
-#                       prod  → PROD_ORG  / PROD_SA_KEY
-#   -o, --org <org>   Override the org derived from --env
-#   -k, --sa-key <f>  Override the SA key file derived from --env
-#   -t, --token <tok> Bearer token (overrides all auth methods)
-#   -a, --all         Process all bundles found in current directory
-#   -v, --verbose     Print full API responses for upload and deploy
-#   -y, --yes         Skip confirmation prompt (non-interactive / scripting)
-#   -C, --check-version
-#                     Compare local files against latest and deployed revisions in Apigee.
-#                     Requires --env (to identify the deployed revision) and --org or config.
-#                     Reports ✓ in sync or ✗ differs with a list of changed files.
-#
-# Examples:
-#   apigee-cli -a                                      # zip all bundles
-#   apigee-cli ais-bedrock-llm                         # zip one bundle
-#   apigee-cli -e dev ais-bedrock-llm                  # zip + upload to nonprod
-#   apigee-cli -e dev -a                               # zip + upload all to nonprod
-#   apigee-cli -e dev -d ais-openai-direct-v2          # zip + upload + deploy one
-#   apigee-cli -e prod -d -a                           # zip + upload + deploy all to prod
-#   apigee-cli -e dev -C ais-openai-direct-v2          # check one bundle vs dev
-#   apigee-cli -e stage -C -a                          # check all bundles vs stage
+# See README.md for full documentation, configuration, and installation.
 
 set -euo pipefail
 
@@ -93,6 +35,8 @@ DEPLOY=true
 DOWNLOAD=false
 DEPLOYED=false
 CHECK=false
+LIST=false
+LIST_FILTER="all"
 REVISION=""
 ALL=false
 VERBOSE=false
@@ -109,6 +53,11 @@ while [[ $# -gt 0 ]]; do
     -u|--upload)   UPLOAD=true; shift ;;
     -d|--deploy)   DEPLOY=true; shift ;;
     -D|--download) DOWNLOAD=true; UPLOAD=false; DEPLOY=false; shift ;;
+    -L|--list) LIST=true; UPLOAD=false; DEPLOY=false; DOWNLOAD=false; CHECK=false; shift
+      # Optional filter: proxies, sharedflows, or all (default)
+      if [[ $# -gt 0 && "$1" =~ ^(proxies|sharedflows|all)$ ]]; then
+        LIST_FILTER="$1"; shift
+      fi ;;
     -C|--check-version) CHECK=true; UPLOAD=false; DEPLOY=false; DOWNLOAD=false; shift ;;
     --deployed)    DEPLOYED=true; shift ;;
     -r|--revision) REVISION="$2"; shift 2 ;;
@@ -120,7 +69,38 @@ while [[ $# -gt 0 ]]; do
     -v|--verbose)  VERBOSE=true; shift ;;
     -y|--yes)      YES=true; shift ;;
     --help|-h)
-      sed -n '3,62p' "$0" | sed 's/^# \?//'
+      cat <<'HELP'
+apigee-cli — Manage Apigee proxy and shared flow bundles
+
+Usage: apigee-cli [OPTIONS] [FOLDER_NAME ...]
+
+Options:
+  -u, --upload        Upload bundles to Apigee after zipping
+  -d, --deploy        Deploy uploaded revision after upload (requires --env)
+  -D, --download      Download revision from Apigee into local folder
+      --deployed      Use with -D to get the currently deployed revision
+  -r, --revision N    Use with -D to download a specific revision
+  -L, --list          List all proxies/shared flows in an environment
+  -C, --check-version Compare local files against Apigee revisions
+  -e, --env <env>     Target environment: dev, test, sand, stage, prod
+  -o, --org <org>     Override org from config
+  -k, --sa-key <f>    Override SA key file from config
+  -t, --token <tok>   Bearer token (overrides all auth)
+  -a, --all           Process all bundles in current directory
+  -v, --verbose       Print full API responses
+  -y, --yes           Skip confirmation prompts
+  -h, --help          Show this help
+
+Examples:
+  apigee-cli -e dev -d ais-openai-direct-v2     # deploy one bundle to dev
+  apigee-cli -e prod -d -a                      # deploy all to prod
+  apigee-cli -e dev -C -a                       # check all bundles vs dev
+  apigee-cli -e dev -L                          # list all in dev
+  apigee-cli -e dev -L proxies                  # list only proxies
+  apigee-cli -e dev -D --deployed my-proxy      # download deployed rev
+
+See README.md for configuration and installation instructions.
+HELP
       exit 0
       ;;
     --*) echo "Unknown option: $1"; exit 1 ;;
@@ -187,6 +167,139 @@ detect_bundle_name() {
     | head -1 \
     | cut -d'"' -f2
 }
+
+# ── List mode (runs early — no bundles needed) ───────────────────────────────
+if $LIST; then
+  if [[ -z "$ENV" ]]; then
+    echo "ERROR: --env is required for --list"
+    exit 1
+  fi
+  if [[ -z "$ORG" ]]; then
+    echo "ERROR: no org configured for env '$ENV'"
+    exit 1
+  fi
+
+  # Resolve token
+  if [[ -z "$TOKEN" ]]; then
+    if [[ -n "$SA_KEY_FILE" ]]; then
+      cfg="apigee-push-$$"
+      gcloud config configurations create "$cfg" --no-activate > /dev/null 2>&1
+      gcloud auth activate-service-account --key-file="$SA_KEY_FILE" \
+        --configuration="$cfg" > /dev/null 2>&1
+      TOKEN=$(gcloud auth print-access-token --configuration="$cfg" 2>/dev/null)
+      gcloud config configurations delete "$cfg" --quiet > /dev/null 2>&1
+      if [[ -z "$TOKEN" ]]; then
+        echo "ERROR: failed to obtain access token from $SA_KEY_FILE"
+        exit 1
+      fi
+    else
+      TOKEN=$(gcloud auth print-access-token 2>/dev/null)
+      if [[ -z "$TOKEN" ]]; then
+        echo "ERROR: failed to obtain access token via gcloud"
+        exit 1
+      fi
+    fi
+  fi
+
+  # Fetch proxy deployments in bulk (the env deployments endpoint only returns proxies)
+  echo "Fetching deployments for env '$ENV'..."
+  _deploy_resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/deployments" \
+    -H "Authorization: Bearer ${TOKEN}") || true
+  if $VERBOSE; then echo "$_deploy_resp" | jq . 2>/dev/null || true; fi
+
+  # Build JSON object mapping proxy name → deployed revision
+  _proxy_deploy_map=$(echo "$_deploy_resp" | jq -r '
+    [.deployments[]? | select(.apiProxy) | {(.apiProxy): .revision}] | add // {}
+  ' 2>/dev/null) || _proxy_deploy_map="{}"
+
+  _list_deployed() {
+    local kind="$1" label="$2" api_path="$3"
+    local resp name deployed_rev latest_rev
+
+    # Get list of all proxies/shared flows with their revision info (single API call)
+    resp=$(curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/${api_path}?includeRevisions=true" \
+      -H "Authorization: Bearer ${TOKEN}") || true
+
+    if $VERBOSE; then echo "$resp" | jq . 2>/dev/null || true; fi
+
+    # Extract names and latest revisions in one jq pass
+    local entries
+    entries=$(echo "$resp" | jq -r '
+      (.proxies // .sharedFlows // [])[] |
+      .name as $n |
+      ((.revision // []) | map(tonumber) | max // "-" | tostring) as $latest |
+      "\($n)\t\($latest)"
+    ' 2>/dev/null) || true
+
+    if [[ -z "$entries" ]]; then
+      echo "  (none found)"
+      return
+    fi
+
+    # For shared flows, the bulk env deployments endpoint doesn't include them,
+    # so fetch each one's deployment in parallel
+    local sf_deploy_map="{}"
+    if [[ "$kind" == "sharedflow" ]]; then
+      local sf_names tmp_dir
+      sf_names=$(echo "$entries" | cut -f1)
+      tmp_dir=$(mktemp -d)
+
+      # Launch parallel curl calls for each shared flow's deployment status
+      while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        curl -s "https://apigee.googleapis.com/v1/organizations/${ORG}/environments/${ENV}/sharedflows/${name}/deployments" \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -o "${tmp_dir}/${name}.json" &
+      done <<< "$sf_names"
+      wait
+
+      # Build the deployment map from parallel results
+      sf_deploy_map="{"
+      local first=true
+      for f in "$tmp_dir"/*.json; do
+        [[ ! -f "$f" ]] && continue
+        name=$(basename "$f" .json)
+        deployed_rev=$(jq -r '.deployments[0].revision // empty' "$f" 2>/dev/null) || true
+        if [[ -n "$deployed_rev" ]]; then
+          $first || sf_deploy_map+=","
+          sf_deploy_map+="\"${name}\":\"${deployed_rev}\""
+          first=false
+        fi
+      done
+      sf_deploy_map+="}"
+      rm -rf "$tmp_dir"
+    fi
+
+    printf "  %-50s  %-10s  %-10s\n" "NAME" "DEPLOYED" "LATEST"
+    printf "  %-50s  %-10s  %-10s\n" "----" "--------" "------"
+
+    while IFS=$'\t' read -r name latest_rev; do
+      [[ -z "$name" ]] && continue
+      if [[ "$kind" == "proxy" ]]; then
+        deployed_rev=$(echo "$_proxy_deploy_map" | jq -r --arg n "$name" '.[$n] // "-"' 2>/dev/null) || deployed_rev="-"
+      else
+        deployed_rev=$(echo "$sf_deploy_map" | jq -r --arg n "$name" '.[$n] // "-"' 2>/dev/null) || deployed_rev="-"
+      fi
+      printf "  %-50s  %-10s  %-10s\n" "$name" "$deployed_rev" "$latest_rev"
+    done <<< "$entries"
+  }
+
+  if [[ "$LIST_FILTER" == "all" || "$LIST_FILTER" == "proxies" ]]; then
+    echo ""
+    echo "API Proxies in org '$ORG' (env: $ENV):"
+    _list_deployed "proxy" "Proxies" "apis"
+  fi
+
+  if [[ "$LIST_FILTER" == "all" || "$LIST_FILTER" == "sharedflows" ]]; then
+    echo ""
+    echo "Shared Flows in org '$ORG' (env: $ENV):"
+    _list_deployed "sharedflow" "Shared Flows" "sharedflows"
+  fi
+
+  echo ""
+  echo "Done."
+  exit 0
+fi
 
 # ── Require a bundle name or --all ────────────────────────────────────────────
 if $ALL; then
