@@ -831,6 +831,13 @@ for BUNDLE in "${TARGETS[@]}"; do
   cp -r "$SRC" "$STAGE_DIR/$INNER"
   find "$STAGE_DIR" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
   find "$STAGE_DIR" -name "*.md" -type f -delete 2>/dev/null || true
+  find "$STAGE_DIR" -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$STAGE_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$STAGE_DIR" -name ".pytest_cache" -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$STAGE_DIR" -name ".gitignore" -type f -delete 2>/dev/null || true
+  find "$STAGE_DIR" -name ".python-version" -type f -delete 2>/dev/null || true
+  find "$STAGE_DIR" -name ".env" -type f -delete 2>/dev/null || true
+  find "$STAGE_DIR" -name "*.pyc" -type f -delete 2>/dev/null || true
   (cd "$STAGE_DIR" && zip -qr "$ZIP" "$INNER")
 
   echo "  ✓ $(du -sh "$ZIP" | cut -f1)"
