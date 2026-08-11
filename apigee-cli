@@ -570,6 +570,28 @@ download_bundle() {
   echo "  ✓ extracted to $dest"
 }
 
+# ── Bundle staging ────────────────────────────────────────────────────────────
+# Things that live in a bundle folder but are not bundle content: VCS metadata,
+# docs, and Python test/tooling artifacts. A bundle repo commonly carries its own
+# tests/ and .gitignore, and .env would leak credentials into a revision.
+#
+# There is one list because three call sites have to agree on what "the bundle"
+# is: the upload zip, the pre-deploy comparison, and -C. If they disagree, -C
+# reports differences that a deploy would not actually change.
+NON_BUNDLE_DIRS=(".git" "tests" "__pycache__" ".pytest_cache")
+NON_BUNDLE_FILES=("*.md" ".gitignore" ".python-version" ".env" "*.pyc")
+
+strip_non_bundle() {
+  local dir="$1" pattern
+  [[ -d "$dir" ]] || return 0
+  for pattern in "${NON_BUNDLE_DIRS[@]}"; do
+    find "$dir" -name "$pattern" -type d -exec rm -rf {} + 2>/dev/null || true
+  done
+  for pattern in "${NON_BUNDLE_FILES[@]}"; do
+    find "$dir" -name "$pattern" -type f -delete 2>/dev/null || true
+  done
+}
+
 check_bundle() {
   local type="$1" name="$2" local_src="$3"
   local resp latest_rev deployed_rev
@@ -630,13 +652,15 @@ check_bundle() {
       return
     fi
 
-    # Build a clean local copy (strip .git, .md, and root descriptor XML — same as what
-    # apigee-push uploads, minus the root XML whose revision attr is overwritten by Apigee)
+    # Normalize both sides the same way: strip non-bundle files (what the upload
+    # zip omits) and the root descriptor XML, whose revision attr Apigee rewrites.
+    # The downloaded side is stripped too, so a revision uploaded before those
+    # exclusions existed does not read as a difference a redeploy would not fix.
     local local_clean="$WORK_DIR/${name}-local-clean"
     rm -rf "$local_clean"
     cp -r "$local_src" "$local_clean"
-    find "$local_clean" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
-    find "$local_clean" -name "*.md" -type f -delete 2>/dev/null || true
+    strip_non_bundle "$local_clean"
+    strip_non_bundle "$inner_dir"
     find "$local_clean" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
     find "$inner_dir" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
 
@@ -732,12 +756,12 @@ precheck_deployed() {
   inner_dir="$extract_dir/$type"
   [[ ! -d "$inner_dir" ]] && return
 
-  # Clean local copy the same way check_bundle does
+  # Normalize both sides the same way check_bundle does
   local_clean="$WORK_DIR/${name}-predeploy-local"
   rm -rf "$local_clean"
   cp -r "$local_src" "$local_clean"
-  find "$local_clean" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
-  find "$local_clean" -name "*.md" -type f -delete 2>/dev/null || true
+  strip_non_bundle "$local_clean"
+  strip_non_bundle "$inner_dir"
   find "$local_clean" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
   find "$inner_dir" -maxdepth 1 -name "*.xml" -type f -delete 2>/dev/null || true
 
@@ -829,15 +853,7 @@ for BUNDLE in "${TARGETS[@]}"; do
 
   mkdir -p "$STAGE_DIR"
   cp -r "$SRC" "$STAGE_DIR/$INNER"
-  find "$STAGE_DIR" -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
-  find "$STAGE_DIR" -name "*.md" -type f -delete 2>/dev/null || true
-  find "$STAGE_DIR" -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
-  find "$STAGE_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-  find "$STAGE_DIR" -name ".pytest_cache" -type d -exec rm -rf {} + 2>/dev/null || true
-  find "$STAGE_DIR" -name ".gitignore" -type f -delete 2>/dev/null || true
-  find "$STAGE_DIR" -name ".python-version" -type f -delete 2>/dev/null || true
-  find "$STAGE_DIR" -name ".env" -type f -delete 2>/dev/null || true
-  find "$STAGE_DIR" -name "*.pyc" -type f -delete 2>/dev/null || true
+  strip_non_bundle "$STAGE_DIR"
   (cd "$STAGE_DIR" && zip -qr "$ZIP" "$INNER")
 
   echo "  ✓ $(du -sh "$ZIP" | cut -f1)"
