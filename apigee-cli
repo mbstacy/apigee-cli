@@ -37,6 +37,12 @@ DEPLOYED=false
 CHECK=false
 LIST=false
 LIST_FILTER="all"
+KVM=false
+KVM_NAME=""
+KVM_PROXY=""
+KVM_ORG_SCOPE=false
+KVM_ENTRY=""
+MASK=false
 REVISION=""
 ALL=false
 VERBOSE=false
@@ -58,6 +64,15 @@ while [[ $# -gt 0 ]]; do
       if [[ $# -gt 0 && "$1" =~ ^(proxies|sharedflows|all)$ ]]; then
         LIST_FILTER="$1"; shift
       fi ;;
+    -K|--kvm) KVM=true; UPLOAD=false; DEPLOY=false; DOWNLOAD=false; CHECK=false; shift
+      # Optional KVM name; omit it to list the KVMs in the scope
+      if [[ $# -gt 0 && "$1" != -* ]]; then
+        KVM_NAME="$1"; shift
+      fi ;;
+    --proxy)       KVM_PROXY="$2"; shift 2 ;;
+    --org-scope)   KVM_ORG_SCOPE=true; shift ;;
+    --entry)       KVM_ENTRY="$2"; shift 2 ;;
+    --mask)        MASK=true; shift ;;
     -C|--check-version) CHECK=true; UPLOAD=false; DEPLOY=false; DOWNLOAD=false; shift ;;
     --deployed)    DEPLOYED=true; shift ;;
     -r|--revision) REVISION="$2"; shift 2 ;;
@@ -82,6 +97,11 @@ Options:
   -r, --revision N    Use with -D to download a specific revision
   -L, --list          List all proxies/shared flows in an environment
   -C, --check-version Compare local files against Apigee revisions
+  -K, --kvm [NAME]    Read a KVM's entries (omit NAME to list KVMs)
+      --proxy <name>  Use with -K for a proxy-scoped KVM
+      --org-scope     Use with -K for an org-scoped KVM (default: env)
+      --entry <name>  Use with -K to read a single entry
+      --mask          Use with -K to mask values
   -e, --env <env>     Target environment: dev, test, sand, stage, prod
   -o, --org <org>     Override org from config
   -k, --sa-key <f>    Override SA key file from config
@@ -98,6 +118,8 @@ Examples:
   apigee-cli -e dev -L                          # list all in dev
   apigee-cli -e dev -L proxies                  # list only proxies
   apigee-cli -e dev -D --deployed my-proxy      # download deployed rev
+  apigee-cli -e dev -K                          # list env KVMs in dev
+  apigee-cli -e prod -K my-kvm --proxy my-proxy # read a proxy KVM
 
 See README.md for configuration and installation instructions.
 HELP
@@ -168,6 +190,30 @@ detect_bundle_name() {
     | cut -d'"' -f2
 }
 
+# ── Resolve token (SA key from config, else active gcloud session) ───────────
+# Sets TOKEN unless it was given with -t/--token.
+resolve_token() {
+  [[ -n "$TOKEN" ]] && return 0
+  if [[ -n "$SA_KEY_FILE" ]]; then
+    local cfg="apigee-push-$$"
+    gcloud config configurations create "$cfg" --no-activate > /dev/null 2>&1
+    gcloud auth activate-service-account --key-file="$SA_KEY_FILE" \
+      --configuration="$cfg" > /dev/null 2>&1
+    TOKEN=$(gcloud auth print-access-token --configuration="$cfg" 2>/dev/null)
+    gcloud config configurations delete "$cfg" --quiet > /dev/null 2>&1
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: failed to obtain access token from $SA_KEY_FILE"
+      exit 1
+    fi
+  else
+    TOKEN=$(gcloud auth print-access-token 2>/dev/null)
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: failed to obtain access token via gcloud"
+      exit 1
+    fi
+  fi
+}
+
 # ── List mode (runs early — no bundles needed) ───────────────────────────────
 if $LIST; then
   if [[ -z "$ENV" ]]; then
@@ -179,27 +225,7 @@ if $LIST; then
     exit 1
   fi
 
-  # Resolve token
-  if [[ -z "$TOKEN" ]]; then
-    if [[ -n "$SA_KEY_FILE" ]]; then
-      cfg="apigee-push-$$"
-      gcloud config configurations create "$cfg" --no-activate > /dev/null 2>&1
-      gcloud auth activate-service-account --key-file="$SA_KEY_FILE" \
-        --configuration="$cfg" > /dev/null 2>&1
-      TOKEN=$(gcloud auth print-access-token --configuration="$cfg" 2>/dev/null)
-      gcloud config configurations delete "$cfg" --quiet > /dev/null 2>&1
-      if [[ -z "$TOKEN" ]]; then
-        echo "ERROR: failed to obtain access token from $SA_KEY_FILE"
-        exit 1
-      fi
-    else
-      TOKEN=$(gcloud auth print-access-token 2>/dev/null)
-      if [[ -z "$TOKEN" ]]; then
-        echo "ERROR: failed to obtain access token via gcloud"
-        exit 1
-      fi
-    fi
-  fi
+  resolve_token
 
   # Fetch proxy deployments in bulk (the env deployments endpoint only returns proxies)
   echo "Fetching deployments for env '$ENV'..."
@@ -301,6 +327,95 @@ if $LIST; then
   exit 0
 fi
 
+# ── KVM mode (runs early — no bundles needed; read-only) ─────────────────────
+if $KVM; then
+  if [[ -z "$ENV" ]]; then
+    echo "ERROR: --env is required for --kvm"
+    exit 1
+  fi
+  if [[ -z "$ORG" ]]; then
+    echo "ERROR: no org configured for env '$ENV'"
+    exit 1
+  fi
+  if [[ -n "$KVM_PROXY" ]] && $KVM_ORG_SCOPE; then
+    echo "ERROR: use --proxy or --org-scope, not both"
+    exit 1
+  fi
+  if [[ -n "$KVM_ENTRY" && -z "$KVM_NAME" ]]; then
+    echo "ERROR: --entry requires a KVM name (-K <name>)"
+    exit 1
+  fi
+
+  resolve_token
+
+  _uri() { jq -rn --arg v "$1" '$v | @uri'; }
+
+  # GET a URL and print the body; on a non-200 response, print the error and fail
+  _kvm_get() {
+    local resp code
+    resp=$(curl -s -w $'\n%{http_code}' "$1" -H "Authorization: Bearer ${TOKEN}") || true
+    code="${resp##*$'\n'}"
+    resp="${resp%$'\n'*}"
+    if [[ "$code" != "200" ]]; then
+      echo "ERROR: HTTP $code from $1" >&2
+      echo "$resp" | jq -r '.error.message // .' >&2 2>/dev/null || echo "$resp" >&2
+      return 1
+    fi
+    echo "$resp"
+  }
+
+  kvm_base="https://apigee.googleapis.com/v1/organizations/${ORG}"
+  if [[ -n "$KVM_PROXY" ]]; then
+    kvm_base+="/apis/$(_uri "$KVM_PROXY")"
+    kvm_scope="proxy '$KVM_PROXY'"
+  elif $KVM_ORG_SCOPE; then
+    kvm_scope="org scope"
+  else
+    kvm_base+="/environments/$(_uri "$ENV")"
+    kvm_scope="env '$ENV'"
+  fi
+
+  # No KVM name: list the KVMs in the scope
+  if [[ -z "$KVM_NAME" ]]; then
+    resp=$(_kvm_get "${kvm_base}/keyvaluemaps") || exit 1
+    if $VERBOSE; then echo "$resp" | jq .; exit 0; fi
+    echo "KVMs in ${kvm_scope} (org: $ORG):"
+    echo "$resp" | jq -r 'if length == 0 then "  (none found)" else .[] | "  " + . end'
+    exit 0
+  fi
+
+  kvm_url="${kvm_base}/keyvaluemaps/$(_uri "$KVM_NAME")"
+  if [[ -n "$KVM_ENTRY" ]]; then
+    entries=$(_kvm_get "${kvm_url}/entries/$(_uri "$KVM_ENTRY")" | jq -c '[.]') || exit 1
+  else
+    # Page through all entries
+    entries="[]"
+    page_token=""
+    while :; do
+      url="${kvm_url}/entries?pageSize=100"
+      [[ -n "$page_token" ]] && url+="&pageToken=$(_uri "$page_token")"
+      resp=$(_kvm_get "$url") || exit 1
+      entries=$(jq -c --argjson acc "$entries" '$acc + (.keyValueEntries // [])' <<< "$resp")
+      page_token=$(jq -r '.nextPageToken // empty' <<< "$resp")
+      [[ -z "$page_token" ]] && break
+    done
+  fi
+
+  if $MASK; then
+    entries=$(jq -c 'map(.value |= ((. // "") |
+      if length <= 16 then ([range(length)] | map("*") | join(""))
+      else .[0:7] + "..." + .[-4:] end))' <<< "$entries")
+  fi
+
+  if $VERBOSE; then
+    jq . <<< "$entries"
+  else
+    echo "KVM '$KVM_NAME' in ${kvm_scope} (org: $ORG):"
+    jq -r 'if length == 0 then "  (no entries)" else .[] | "  \(.name): \(.value // "")" end' <<< "$entries"
+  fi
+  exit 0
+fi
+
 # ── Require a bundle name or --all ────────────────────────────────────────────
 if $ALL; then
   # Auto-discover: any subdirectory with proxies/ or sharedflows/
@@ -377,23 +492,10 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 if ($UPLOAD || $DOWNLOAD || $CHECK) && [[ -z "$TOKEN" ]]; then
   if [[ -n "$SA_KEY_FILE" ]]; then
     echo "Authenticating with $SA_KEY_FILE ..."
-    cfg="apigee-push-$$"
-    gcloud config configurations create "$cfg" --no-activate > /dev/null 2>&1
-    gcloud auth activate-service-account --key-file="$SA_KEY_FILE" \
-      --configuration="$cfg" > /dev/null 2>&1
-    TOKEN=$(gcloud auth print-access-token --configuration="$cfg" 2>/dev/null)
-    gcloud config configurations delete "$cfg" --quiet > /dev/null 2>&1
-    if [[ -z "$TOKEN" ]]; then
-      echo "ERROR: failed to obtain access token from $SA_KEY_FILE"
-      exit 1
-    fi
+    resolve_token
     echo "  ✓ token obtained"
   else
-    TOKEN=$(gcloud auth print-access-token 2>/dev/null)
-    if [[ -z "$TOKEN" ]]; then
-      echo "ERROR: failed to obtain access token via gcloud"
-      exit 1
-    fi
+    resolve_token
   fi
 fi
 
