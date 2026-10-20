@@ -1,6 +1,6 @@
-Bundle, upload, and deploy Apigee proxy/shared flow bundles using the following arguments: $ARGUMENTS
+Bundle, upload, and deploy Apigee proxy/shared flow bundles, or read Apigee KVMs, using the following arguments: $ARGUMENTS
 
-The apigee-cli script is installed on PATH. Always run it from the working directory containing the Apigee bundle folders.
+The apigee-cli script is installed on PATH. Always run it from the working directory containing the Apigee bundle folders. KVM mode (`-K`) doesn't need bundle folders and can run from any directory.
 
 ## apigee-cli flags (pass these through directly — do not reinterpret)
 
@@ -12,9 +12,16 @@ The apigee-cli script is installed on PATH. Always run it from the working direc
 | `--deployed` | Use with `-D` to get the currently deployed revision |
 | `-r N` / `--revision N` | Use with `-D` to download a specific revision |
 | `-a` / `--all` | Process all bundles in current directory |
-| `-v` / `--verbose` | Print full API responses |
+| `-K [NAME]` / `--kvm [NAME]` | Read a KVM's entries (read-only). Omit NAME to list the KVMs in the scope. |
+| `--proxy <name>` | Use with `-K` for a proxy-scoped KVM |
+| `--org-scope` | Use with `-K` for an org-scoped KVM (default: env scope) |
+| `--entry <name>` | Use with `-K` to read one entry |
+| `--mask` | Use with `-K` to mask values |
+| `-v` / `--verbose` | Print full API responses (with `-K`, entries as JSON) |
 
 If $ARGUMENTS contains any of these flags, pass them straight to apigee-cli without reinterpreting. Always append `--yes` and `-e <env>`.
+
+The word `kvm` in $ARGUMENTS means `-K`. The word after it, if any, is the KVM name.
 
 ## Argument parsing
 
@@ -30,6 +37,9 @@ Examples:
 - `stage -C openai` → check ais-openai-direct-v2 against stage
 - `dev deploy openai` → deploy ais-openai-direct-v2 to dev
 - `prod adex-ais-cors ais-openai-direct-v2` → deploy two bundles to prod
+- `dev kvm` → list env-scoped KVMs in dev
+- `prod kvm my-proxy-kvm --proxy my-proxy` → read a proxy-scoped KVM in prod
+- `prod kvm my-proxy-kvm --proxy my-proxy --entry api-key --mask` → read one entry, masked
 
 ## Steps
 
@@ -37,6 +47,7 @@ Examples:
    - `-C` → check-version mode (no deploy, no confirmation needed, just run)
    - `-d` or "deploy" in args → deploy mode
    - `-D` → download mode
+   - `-K` or `kvm` → KVM mode (read-only, no bundles, no confirmation needed, just run)
    - No flag → default to deploy mode
 
 2. Identify which bundles:
@@ -54,9 +65,11 @@ Examples:
    - Check:  `apigee-cli -e <env> -C --yes <bundles...>`
    - Deploy: `apigee-cli -e <env> -d --yes <bundles...>`
    - All:    `apigee-cli -e <env> -C --yes -a` or `apigee-cli -e <env> -d --yes -a`
+   - KVM:    `apigee-cli -e <env> -K [<kvm>] [--proxy <proxy> | --org-scope] [--entry <name>] [--mask] --yes`
 
 6. Report the result.
 
 ## Notes
 - The script handles authentication via ~/.apigee-cli config automatically
 - If a bundle folder doesn't exist locally, skip it with a warning
+- KVM values are often secrets. Without `--mask`, the full values end up in the conversation, so pass `--mask` unless the user asked for the full values
