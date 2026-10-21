@@ -12,6 +12,7 @@ The apigee-cli script is installed on PATH. Always run it from the working direc
 | `--deployed` | Use with `-D` to get the currently deployed revision |
 | `-r N` / `--revision N` | Use with `-D` to download a specific revision |
 | `-a` / `--all` | Process all bundles in current directory |
+| `-L` / `--list` | List all proxies/shared flows in an environment (optional: `proxies` or `sharedflows` filter) |
 | `-K [NAME]` / `--kvm [NAME]` | Read a KVM's entries (read-only). Omit NAME to list the KVMs in the scope. |
 | `--proxy <name>` | Use with `-K` for a proxy-scoped KVM |
 | `--org-scope` | Use with `-K` for an org-scoped KVM (default: env scope) |
@@ -37,6 +38,9 @@ Examples:
 - `stage -C openai` → check ais-openai-direct-v2 against stage
 - `dev deploy openai` → deploy ais-openai-direct-v2 to dev
 - `prod adex-ais-cors ais-openai-direct-v2` → deploy two bundles to prod
+- `dev -L` → list all proxies and shared flows in dev
+- `dev -L proxies` → list only proxies in dev
+- `list dev` → list all in dev
 - `dev kvm` → list env-scoped KVMs in dev
 - `prod kvm my-proxy-kvm --proxy my-proxy` → read a proxy-scoped KVM in prod
 - `prod kvm my-proxy-kvm --proxy my-proxy --entry api-key --mask` → read one entry, masked
@@ -47,6 +51,7 @@ Examples:
    - `-C` → check-version mode (no deploy, no confirmation needed, just run)
    - `-d` or "deploy" in args → deploy mode
    - `-D` → download mode
+   - `-L` or "list" in args → list mode (no bundles needed, just env; optional filter: `proxies` or `sharedflows`)
    - `-K` or `kvm` → KVM mode (read-only, no bundles, no confirmation needed, just run)
    - No flag → default to deploy mode
 
@@ -65,6 +70,7 @@ Examples:
    - Check:  `apigee-cli -e <env> -C --yes <bundles...>`
    - Deploy: `apigee-cli -e <env> -d --yes <bundles...>`
    - All:    `apigee-cli -e <env> -C --yes -a` or `apigee-cli -e <env> -d --yes -a`
+   - List:   `apigee-cli -e <env> -L --yes [proxies|sharedflows]`
    - KVM:    `apigee-cli -e <env> -K [<kvm>] [--proxy <proxy> | --org-scope] [--entry <name>] [--mask] --yes`
 
 6. Report the result.

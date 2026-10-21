@@ -680,8 +680,11 @@ download_bundle() {
 # There is one list because three call sites have to agree on what "the bundle"
 # is: the upload zip, the pre-deploy comparison, and -C. If they disagree, -C
 # reports differences that a deploy would not actually change.
-NON_BUNDLE_DIRS=(".git" "tests" "__pycache__" ".pytest_cache")
-NON_BUNDLE_FILES=("*.md" ".gitignore" ".python-version" ".env" "*.pyc")
+NON_BUNDLE_DIRS=(".git" ".github" "tests" "__pycache__" ".pytest_cache")
+# CODEOWNERS has no extension, so "*.md" does not catch it and Apigee rejects the
+# whole upload with "zip entry in bundle has invalid path". Same for anything else
+# GitHub-only that lands beside the descriptor.
+NON_BUNDLE_FILES=("*.md" ".gitignore" ".python-version" ".env" "*.pyc" "CODEOWNERS" "LICENSE")
 
 strip_non_bundle() {
   local dir="$1" pattern
