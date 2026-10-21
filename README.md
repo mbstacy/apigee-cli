@@ -193,7 +193,7 @@ A warning is shown if the branch doesn't match — you can still proceed.
 
 The canonical bundle name is read from the root XML descriptor (`APIProxy` or `SharedFlowBundle` `name` attribute), not the folder name.
 
-`.git` directories and `.md` files are always excluded from the zip.
+Files that aren't part of the bundle are always excluded from the zip: the `.git`, `.github`, `tests`, `__pycache__` and `.pytest_cache` directories, and `*.md`, `.gitignore`, `.python-version`, `.env`, `*.pyc`, `CODEOWNERS` and `LICENSE` files. Apigee rejects an upload containing `CODEOWNERS` with "zip entry in bundle has invalid path".
 
 ---
 
