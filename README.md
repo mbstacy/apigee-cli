@@ -1,6 +1,6 @@
 # apigee-cli
 
-CLI tool for managing Apigee X proxy and shared flow bundles. Packages folders into zips, uploads to Apigee, deploys revisions, downloads from Apigee, compares local vs remote, and lists what's deployed.
+CLI tool for managing Apigee X proxy and shared flow bundles. Packages folders into zips, uploads to Apigee, deploys revisions, downloads from Apigee, compares local vs remote, lists what's deployed, and reads key value maps (KVMs).
 
 ---
 
@@ -14,6 +14,7 @@ CLI tool for managing Apigee X proxy and shared flow bundles. Packages folders i
 - `--list` to show all proxies/shared flows deployed in an environment
 - `--check-version` to compare local files against Apigee revisions
 - `--download` to pull a revision from Apigee back to local
+- `--kvm` to list KVMs and read their entries (environment, proxy, or org scope), with optional masking
 - `--yes` for non-interactive use (CI, scripting, Claude Code skill)
 - Git branch safety check before deploy
 
@@ -112,12 +113,17 @@ apigee-cli [OPTIONS] [FOLDER_NAME ...]
 | `-r`, `--revision N` | Use with `-D` to download a specific revision |
 | `-L`, `--list` | List all proxies and/or shared flows in an environment |
 | `-C`, `--check-version` | Compare local files against latest + deployed revisions in Apigee |
+| `-K`, `--kvm [NAME]` | Read a KVM's entries. Omit `NAME` to list the KVMs in the scope. |
+| `--proxy <name>` | Use with `-K` for a proxy-scoped KVM |
+| `--org-scope` | Use with `-K` for an org-scoped KVM (default: the `--env` environment) |
+| `--entry <name>` | Use with `-K` to read a single entry |
+| `--mask` | Use with `-K` to mask values (first 7 and last 4 characters) |
 | `-e`, `--env <env>` | Target environment: `dev`, `test`, `sand`, `stage`, `prod` |
 | `-o`, `--org <org>` | Override the org derived from `--env` |
 | `-k`, `--sa-key <file>` | Override the SA key file derived from `--env` |
 | `-t`, `--token <tok>` | Bearer token (overrides all auth methods) |
 | `-a`, `--all` | Process all bundles found in current directory |
-| `-v`, `--verbose` | Print full API responses |
+| `-v`, `--verbose` | Print full API responses (with `-K`, print the entries as JSON) |
 | `-y`, `--yes` | Skip confirmation prompts |
 
 ### Examples
@@ -145,10 +151,24 @@ apigee-cli -e dev -D ais-openai-direct-v2          # download latest revision
 apigee-cli -e dev -D --deployed ais-openai-direct-v2  # download deployed revision
 apigee-cli -e dev -D -r 5 ais-openai-direct-v2    # download specific revision
 
+# Read KVMs (read-only)
+apigee-cli -e dev -K                               # list env-scoped KVMs in dev
+apigee-cli -e dev -K adex-splunk-kvm               # read every entry of an env KVM
+apigee-cli -e prod -K --proxy my-proxy             # list a proxy's KVMs
+apigee-cli -e prod -K my-proxy-kvm --proxy my-proxy --mask         # masked values
+apigee-cli -e prod -K my-proxy-kvm --proxy my-proxy --entry api-key  # one entry
+apigee-cli -e dev -K --org-scope                   # list org-scoped KVMs
+
 # Zip only (no upload)
 apigee-cli -a                                      # zip all bundles
 apigee-cli ais-bedrock-llm                         # zip one bundle
 ```
+
+### Reading KVMs
+
+`-K` is read-only, so it never asks for confirmation. It uses the org and credentials for `--env` from `~/.apigee-cli`, like every other mode. That identity needs permission to read KVM entries.
+
+Values are printed in full unless you pass `--mask`. KVMs often hold secrets, so use `--mask` when the output may be logged or shared.
 
 ### Environment-to-branch mapping
 
@@ -173,7 +193,7 @@ A warning is shown if the branch doesn't match — you can still proceed.
 
 The canonical bundle name is read from the root XML descriptor (`APIProxy` or `SharedFlowBundle` `name` attribute), not the folder name.
 
-`.git` directories and `.md` files are always excluded from the zip.
+Files that aren't part of the bundle are always excluded from the zip: the `.git`, `.github`, `tests`, `__pycache__` and `.pytest_cache` directories, and `*.md`, `.gitignore`, `.python-version`, `.env`, `*.pyc`, `CODEOWNERS` and `LICENSE` files. Apigee rejects an upload containing `CODEOWNERS` with "zip entry in bundle has invalid path".
 
 ---
 
@@ -189,6 +209,7 @@ The skill file is installed to `~/.claude/commands/apigee-cli.md` by the install
 /apigee-cli dev deploy openai        # deploy ais-openai-direct-v2 to dev
 /apigee-cli stage -C                 # check all bundles against stage
 /apigee-cli dev -L proxies           # list proxies in dev
+/apigee-cli prod kvm my-proxy-kvm --proxy my-proxy --mask   # read a proxy KVM, masked
 ```
 
 See [`claude/apigee-cli.md`](claude/apigee-cli.md) for the skill definition.
